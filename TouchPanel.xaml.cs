@@ -31,11 +31,7 @@ public partial class TouchPanel : Window
     private readonly Dictionary<uint, PointerTrack> _pointerStates = new();
     private readonly Dictionary<TouchValue, int> _sensorHoldCounts = new();
     private readonly Dictionary<TouchValue, Polygon> _polygonByValue = new();
-    private readonly Dictionary<char, List<(double angleDeg, TouchValue value)>> _ringAngleMaps = new();
-    private readonly Dictionary<char, double> _ringRadius = new();
-    private double _centerX = 720.0, _centerY = 720.0;
-    private double _radiusThresh_AD, _radiusThresh_DB, _radiusThresh_BE, _centerRadius;
-    private double _contactRadiusPx = 1.0; // hardcoded touch radius (canvas pixels)
+    private double _contactRadiusPx = 50.0; // hardcoded touch radius (canvas pixels)
     private int _circleSampleCount = 16;     // points on contact circle
 
     private enum ResizeDirection
@@ -201,7 +197,6 @@ public partial class TouchPanel : Window
                 _polygonByValue[tv] = p;
             }
         }
-        BuildPolarMapping();
         DeselectAllItems();
 
         try
@@ -847,163 +842,44 @@ public partial class TouchPanel : Window
         }
     }
 
-    private void BuildPolarMapping()
-    {
-        // Derive center from C1/C2 if available
-        Point? c1 = null, c2 = null;
-        if (_polygonByValue.TryGetValue(TouchValue.C1, out var pC1)) c1 = GetPolygonCentroid(pC1);
-        if (_polygonByValue.TryGetValue(TouchValue.C2, out var pC2)) c2 = GetPolygonCentroid(pC2);
-        if (c1.HasValue && c2.HasValue)
-        {
-            _centerX = (c1.Value.X + c2.Value.X) / 2.0;
-            _centerY = (c1.Value.Y + c2.Value.Y) / 2.0;
-        }
-        else
-        {
-            _centerX = TouchCanvas.Width / 2.0;
-            _centerY = TouchCanvas.Height / 2.0;
-        }
-
-        _ringAngleMaps.Clear();
-        _ringRadius.Clear();
-        var ringMinR = new Dictionary<char, double> { ['A']=double.PositiveInfinity, ['D']=double.PositiveInfinity, ['B']=double.PositiveInfinity, ['E']=double.PositiveInfinity };
-        var ringMaxR = new Dictionary<char, double> { ['A']=0.0, ['D']=0.0, ['B']=0.0, ['E']=0.0 };
-        var groups = new Dictionary<char, List<(double r, double ang, TouchValue v)>>
-        {
-            ['A'] = new(), ['B'] = new(), ['D'] = new(), ['E'] = new()
-        };
-
-        foreach (var kv in _polygonByValue)
-        {
-            var v = kv.Key;
-            var name = Enum.GetName(typeof(TouchValue), v);
-            if (string.IsNullOrEmpty(name) || name!.Length < 2) continue;
-            var letter = name![0];
-            if (!groups.ContainsKey(letter)) continue;
-            var centroid = GetPolygonCentroid(kv.Value);
-            var dx = centroid.X - _centerX;
-            var dy = centroid.Y - _centerY;
-            var r = Math.Sqrt(dx * dx + dy * dy);
-            var ang = (Math.Atan2(dy, dx) * 180.0 / Math.PI + 360.0) % 360.0;
-            groups[letter].Add((r, ang, v));
-
-            // Track radial extents from all polygon vertices
-            double left = Canvas.GetLeft(kv.Value); if (double.IsNaN(left)) left = 0;
-            double top = Canvas.GetTop(kv.Value); if (double.IsNaN(top)) top = 0;
-            double pMin = double.PositiveInfinity, pMax = 0.0;
-            foreach (var pt in kv.Value.Points)
-            {
-                var ax = left + pt.X;
-                var ay = top + pt.Y;
-                var rx = ax - _centerX;
-                var ry = ay - _centerY;
-                var rr = Math.Sqrt(rx * rx + ry * ry);
-                if (rr < pMin) pMin = rr;
-                if (rr > pMax) pMax = rr;
-            }
-            if (pMin < double.PositiveInfinity)
-            {
-                if (pMin < ringMinR[letter]) ringMinR[letter] = pMin;
-                if (pMax > ringMaxR[letter]) ringMaxR[letter] = pMax;
-            }
-        }
-
-        foreach (var letter in groups.Keys)
-        {
-            var lst = groups[letter];
-            if (lst.Count > 0)
-            {
-                _ringRadius[letter] = lst.Average(x => x.r);
-                _ringAngleMaps[letter] = lst.OrderBy(x => x.ang).Select(x => (x.ang, x.v)).ToList();
-            }
-        }
-
-        // Radius thresholds between rings using ring edge extents (more robust)
-        // Fall back to averages if missing.
-        double raMin = ringMinR.ContainsKey('A') && !double.IsPositiveInfinity(ringMinR['A']) ? ringMinR['A'] : _ringRadius.GetValueOrDefault('A', 700);
-        double rdMax = ringMaxR.ContainsKey('D') ? ringMaxR['D'] : _ringRadius.GetValueOrDefault('D', 550);
-        double rdMin = ringMinR.ContainsKey('D') && !double.IsPositiveInfinity(ringMinR['D']) ? ringMinR['D'] : _ringRadius.GetValueOrDefault('D', 550);
-        double rbMax = ringMaxR.ContainsKey('B') ? ringMaxR['B'] : _ringRadius.GetValueOrDefault('B', 400);
-        double rbMin = ringMinR.ContainsKey('B') && !double.IsPositiveInfinity(ringMinR['B']) ? ringMinR['B'] : _ringRadius.GetValueOrDefault('B', 400);
-        double reMax = ringMaxR.ContainsKey('E') ? ringMaxR['E'] : _ringRadius.GetValueOrDefault('E', 275);
-
-        _radiusThresh_AD = (raMin + rdMax) / 2.0;
-        _radiusThresh_DB = (rdMin + rbMax) / 2.0;
-        _radiusThresh_BE = (rbMin + reMax) / 2.0;
-
-        // Center radius: max of C1/C2 vertices distance from center (fall back to small radius)
-        double centerMax = 0.0;
-        foreach (var kv in _polygonByValue)
-        {
-            if (kv.Key == TouchValue.C1 || kv.Key == TouchValue.C2)
-            {
-                foreach (var pt in kv.Value.Points)
-                {
-                    var left = Canvas.GetLeft(kv.Value); if (double.IsNaN(left)) left = 0;
-                    var top = Canvas.GetTop(kv.Value); if (double.IsNaN(top)) top = 0;
-                    var ax = left + pt.X;
-                    var ay = top + pt.Y;
-                    var dx = ax - _centerX;
-                    var dy = ay - _centerY;
-                    var r = Math.Sqrt(dx * dx + dy * dy);
-                    if (r > centerMax) centerMax = r;
-                }
-            }
-        }
-        _centerRadius = Math.Max(40, centerMax);
-    }
-
-    private static Point GetPolygonCentroid(Polygon poly)
-    {
-        double left = Canvas.GetLeft(poly); if (double.IsNaN(left)) left = 0;
-        double top = Canvas.GetTop(poly); if (double.IsNaN(top)) top = 0;
-        if (poly.Points.Count == 0) return new Point(left, top);
-        double sx = 0, sy = 0;
-        foreach (var p in poly.Points) { sx += p.X; sy += p.Y; }
-        return new Point(left + sx / poly.Points.Count, top + sy / poly.Points.Count);
-    }
-
     private TouchValue? MapPointToTouchValue(Point canvasPoint)
     {
-        var dx = canvasPoint.X - _centerX;
-        var dy = canvasPoint.Y - _centerY;
-        var r = Math.Sqrt(dx * dx + dy * dy);
-        var ang = (Math.Atan2(dy, dx) * 180.0 / Math.PI + 360.0) % 360.0;
-
-        if (r <= _centerRadius)
+        // Test against all polygons using a fast point-in-polygon
+        foreach (var kv in _polygonByValue)
         {
-            return canvasPoint.X >= _centerX ? TouchValue.C1 : TouchValue.C2;
-        }
-
-        char ring;
-        if (r >= _radiusThresh_AD) ring = 'A';
-        else if (r >= _radiusThresh_DB) ring = 'D';
-        else if (r >= _radiusThresh_BE) ring = 'B';
-        else ring = 'E';
-
-        if (!_ringAngleMaps.TryGetValue(ring, out var map) || map.Count == 0)
-        {
-            return null;
-        }
-
-        double bestDiff = double.MaxValue;
-        TouchValue best = map[0].value;
-        foreach (var (a, v) in map)
-        {
-            var diff = Math.Abs(Norm180(ang - a));
-            if (diff < bestDiff)
+            if (PointInPolygon(canvasPoint, kv.Value))
             {
-                bestDiff = diff;
-                best = v;
+                return kv.Key;
             }
         }
-        return best;
+        return null;
     }
 
-    private static double Norm180(double ang)
+    private static bool PointInPolygon(Point p, Polygon poly)
     {
-        ang = (ang + 180.0) % 360.0;
-        if (ang < 0) ang += 360.0;
-        return ang - 180.0;
+        // Ray-casting algorithm in Canvas coordinates (accounts for Canvas.Left/Top)
+        double left = Canvas.GetLeft(poly); if (double.IsNaN(left)) left = 0;
+        double top = Canvas.GetTop(poly); if (double.IsNaN(top)) top = 0;
+        var pts = poly.Points;
+        int count = pts.Count;
+        if (count < 3) return false;
+        bool inside = false;
+        double x = p.X, y = p.Y;
+        double x0 = left + pts[count - 1].X;
+        double y0 = top + pts[count - 1].Y;
+        for (int i = 0; i < count; i++)
+        {
+            double x1 = left + pts[i].X;
+            double y1 = top + pts[i].Y;
+            // Check if edge (x0,y0)-(x1,y1) straddles the scanline at y
+            bool cond = ((y1 > y) != (y0 > y));
+            if (cond)
+            {
+                double xInt = x1 + (y - y1) * (x0 - x1) / (y0 - y1);
+                if (xInt > x) inside = !inside;
+            }
+            x0 = x1; y0 = y1;
+        }
+        return inside;
     }
 }
