@@ -1,28 +1,35 @@
-﻿<Window x:Class="WpfMaiTouchEmulator.TouchPanel"
-        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
-        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        xmlns:local="clr-namespace:WpfMaiTouchEmulator.Managers"
-        mc:Ignorable="d"
-        Title="TouchPanel" Height="1280" Width="720"
-        ResizeMode="NoResize"
-        AllowsTransparency="True" WindowStyle="None" Background="Transparent"
->
+﻿<Window
+    x:Class="WpfMaiTouchEmulator.TouchPanel"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:local="clr-namespace:WpfMaiTouchEmulator.Managers"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    Title="TouchPanel"
+    Width="720"
+    Height="1280"
+    AllowsTransparency="True"
+    Background="Transparent"
+    ResizeMode="NoResize"
+    WindowStyle="None"
+    mc:Ignorable="d">
     <Window.Resources>
         <Style x:Key="DraggableHandleStyle" TargetType="Border">
             <Setter Property="Background">
                 <Setter.Value>
                     <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
-                        <GradientStop Color="#FFEEEEEE" Offset="0"/>
-                        <GradientStop Color="#FFCCCCCC" Offset="1"/>
+                        <GradientStop Offset="0" Color="#FFEEEEEE" />
+                        <GradientStop Offset="1" Color="#FFCCCCCC" />
                     </LinearGradientBrush>
                 </Setter.Value>
             </Setter>
-            <Setter Property="CornerRadius" Value="10"/>
+            <Setter Property="CornerRadius" Value="10" />
             <Setter Property="Effect">
                 <Setter.Value>
-                    <DropShadowEffect Color="Black" BlurRadius="5" ShadowDepth="2"/>
+                    <DropShadowEffect
+                        BlurRadius="5"
+                        ShadowDepth="2"
+                        Color="Black" />
                 </Setter.Value>
             </Setter>
         </Style>
@@ -30,15 +37,18 @@
             <Setter Property="Background">
                 <Setter.Value>
                     <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                        <GradientStop Color="#FFCCCCCC" Offset="0"/>
-                        <GradientStop Color="#FFAAAAAA" Offset="1"/>
+                        <GradientStop Offset="0" Color="#FFCCCCCC" />
+                        <GradientStop Offset="1" Color="#FFAAAAAA" />
                     </LinearGradientBrush>
                 </Setter.Value>
             </Setter>
-            <Setter Property="CornerRadius" Value="10"/>
+            <Setter Property="CornerRadius" Value="10" />
             <Setter Property="Effect">
                 <Setter.Value>
-                    <DropShadowEffect Color="Black" BlurRadius="5" ShadowDepth="2"/>
+                    <DropShadowEffect
+                        BlurRadius="5"
+                        ShadowDepth="2"
+                        Color="Black" />
                 </Setter.Value>
             </Setter>
         </Style>
@@ -49,70 +59,269 @@
                 <RowDefinition Height="*" />
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
-            <Border x:Name="DragWindowHandle"
-                    HorizontalAlignment="Left" VerticalAlignment="Top"
-                    Height="50" Width="100"
-                    Style="{StaticResource DraggableHandleStyle}"
-                    MouseLeftButtonDown="DragBar_MouseLeftButtonDown"
-                    Cursor="SizeAll">
-                <TextBlock FontSize="24" Text="{Binding LbTouchPanelDrag}"
-                           VerticalAlignment="Center" HorizontalAlignment="Center" d:Text="Drag"/>
+            <Border
+                x:Name="DragWindowHandle"
+                Width="100"
+                Height="50"
+                HorizontalAlignment="Left"
+                VerticalAlignment="Top"
+                Cursor="SizeAll"
+                MouseLeftButtonDown="DragBar_MouseLeftButtonDown"
+                Style="{StaticResource DraggableHandleStyle}">
+                <TextBlock
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    d:Text="Drag"
+                    FontSize="24"
+                    Text="{Binding LbTouchPanelDrag}" />
             </Border>
             <DockPanel VerticalAlignment="Bottom">
-                <Viewbox Stretch="Uniform" Opacity="1">
-                    <Border x:Name="touchPanelBorder" BorderThickness="10"
-                       CornerRadius="720" 
-                       Width="1440" VerticalAlignment="Bottom">
-                        <Canvas x:Name="TouchCanvas" Width="1440" Height="1440" Margin="-10,-10,-10,-10">
+                <Viewbox Opacity="1" Stretch="Uniform">
+                    <Border
+                        x:Name="touchPanelBorder"
+                        Width="1440"
+                        VerticalAlignment="Bottom"
+                        BorderThickness="10"
+                        CornerRadius="720">
+                        <Grid
+                            x:Name="TouchGrid"
+                            Width="1440"
+                            Height="1440">
+                            <Canvas
+                                x:Name="TouchCanvas"
+                                Width="1440"
+                                Height="1440"
+                                Margin="-10,-10,-10,-10">
 
-                            <Polygon Canvas.Left="620" Canvas.Top="6" Points="0,5 50,2 100,0 150,2 200,5 165,253 100,188 35,253" Tag="{x:Static local:TouchValue.D1}" Fill="White" />
-                            <Polygon Canvas.Left="786" Canvas.Top="11" Points="150,28 245,65 360,133 208,338 145,338 49,297 0,249 35,0" Tag="{x:Static local:TouchValue.A1}" Fill="White" />
-                            <Polygon Canvas.Left="995" Canvas.Top="144" Points="153,0 187,32 225,67 259,104 295,147 96,297 96,205 0,205" Tag="{x:Static local:TouchValue.D2}" Fill="White" />
-                            <Polygon Canvas.Left="1091" Canvas.Top="292" Points="261,101 303,195 339,327 91,362 42,314 0,219 0,150 202,0" Tag="{x:Static local:TouchValue.A2}" Fill="White" />
-                            <Polygon Canvas.Left="1182" Canvas.Top="620" Points="248,0 251,48 253,100 251,150 247,199 0,165 65,100 0,35" Tag="{x:Static local:TouchValue.D3}" Fill="White" />
-                            <Polygon Canvas.Left="1092" Canvas.Top="786" Points="305,150 269,246 201,364 0,213 0,144 41,48 89,0 337,34" Tag="{x:Static local:TouchValue.A3}" Fill="White" />
-                            <Polygon Canvas.Left="1000" Canvas.Top="1000" Points="292,151 260,187 225,225 188,259 151,291 0,92 92,92 92,0" Tag="{x:Static local:TouchValue.D4}" Fill="White" />
-                            <Polygon Canvas.Left="786" Canvas.Top="1092" Points="260,259 167,301 37,335 0,83 48,35 144,0 212,0 364,200"  Tag="{x:Static local:TouchValue.A4}" Fill="White" />
-                            <Polygon Canvas.Left="621" Canvas.Top="1175" Points="199,252 151,255 99,257 49,255 0,252 34,0 99,65 164,0"  Tag="{x:Static local:TouchValue.D5}" Fill="White" />
-                            <Polygon Canvas.Left="291" Canvas.Top="1092" Points="104,259 197,301 327,335 363,83 316,35 220,0 152,0 0,201"  Tag="{x:Static local:TouchValue.A5}" Fill="White" />
-                            <Polygon Canvas.Left="150" Canvas.Top="1000" Points="140,292 104,260 66,225 32,188 0,151 199,0 199,92 291,92"  Tag="{x:Static local:TouchValue.D6}" Fill="White" />
-                            <Polygon Canvas.Left="16" Canvas.Top="785" Points="32,150 68,246 133,365 333,214 333,144 296,48 248,0 0,35"  Tag="{x:Static local:TouchValue.A6}" Fill="White" />
-                            <Polygon Canvas.Left="10" Canvas.Top="620" Points="5,199 2,151 0,99 2,49 6,0 253,34 188,99 253,164"  Tag="{x:Static local:TouchValue.D7}" Fill="White" />
-                            <Polygon Canvas.Left="16" Canvas.Top="291" Points="78,101 36,195 0,327 248,362 297,314 333,219 333,151 132,0"  Tag="{x:Static local:TouchValue.A7}" Fill="White" />
-                            <Polygon Canvas.Left="149" Canvas.Top="150" Points="0,140 32,104 67,66 104,32 145,0 298,199 200,199 200,291"  Tag="{x:Static local:TouchValue.D8}" Fill="White" />
-                            <Polygon Canvas.Left="295" Canvas.Top="11" Points="210,28 115,65 0,138 153,338 215,338 311,297 359,249 324,0"  Tag="{x:Static local:TouchValue.A8}" Fill="White" />
+                                <Polygon
+                                    Canvas.Left="620"
+                                    Canvas.Top="6"
+                                    Fill="White"
+                                    Points="0,5 50,2 100,0 150,2 200,5 165,253 100,188 35,253"
+                                    Tag="{x:Static local:TouchValue.D1}" />
+                                <Polygon
+                                    Canvas.Left="786"
+                                    Canvas.Top="11"
+                                    Fill="White"
+                                    Points="150,28 245,65 360,133 208,338 145,338 49,297 0,249 35,0"
+                                    Tag="{x:Static local:TouchValue.A1}" />
+                                <Polygon
+                                    Canvas.Left="995"
+                                    Canvas.Top="144"
+                                    Fill="White"
+                                    Points="153,0 187,32 225,67 259,104 295,147 96,297 96,205 0,205"
+                                    Tag="{x:Static local:TouchValue.D2}" />
+                                <Polygon
+                                    Canvas.Left="1091"
+                                    Canvas.Top="292"
+                                    Fill="White"
+                                    Points="261,101 303,195 339,327 91,362 42,314 0,219 0,150 202,0"
+                                    Tag="{x:Static local:TouchValue.A2}" />
+                                <Polygon
+                                    Canvas.Left="1182"
+                                    Canvas.Top="620"
+                                    Fill="White"
+                                    Points="248,0 251,48 253,100 251,150 247,199 0,165 65,100 0,35"
+                                    Tag="{x:Static local:TouchValue.D3}" />
+                                <Polygon
+                                    Canvas.Left="1092"
+                                    Canvas.Top="786"
+                                    Fill="White"
+                                    Points="305,150 269,246 201,364 0,213 0,144 41,48 89,0 337,34"
+                                    Tag="{x:Static local:TouchValue.A3}" />
+                                <Polygon
+                                    Canvas.Left="1000"
+                                    Canvas.Top="1000"
+                                    Fill="White"
+                                    Points="292,151 260,187 225,225 188,259 151,291 0,92 92,92 92,0"
+                                    Tag="{x:Static local:TouchValue.D4}" />
+                                <Polygon
+                                    Canvas.Left="786"
+                                    Canvas.Top="1092"
+                                    Fill="White"
+                                    Points="260,259 167,301 37,335 0,83 48,35 144,0 212,0 364,200"
+                                    Tag="{x:Static local:TouchValue.A4}" />
+                                <Polygon
+                                    Canvas.Left="621"
+                                    Canvas.Top="1175"
+                                    Fill="White"
+                                    Points="199,252 151,255 99,257 49,255 0,252 34,0 99,65 164,0"
+                                    Tag="{x:Static local:TouchValue.D5}" />
+                                <Polygon
+                                    Canvas.Left="291"
+                                    Canvas.Top="1092"
+                                    Fill="White"
+                                    Points="104,259 197,301 327,335 363,83 316,35 220,0 152,0 0,201"
+                                    Tag="{x:Static local:TouchValue.A5}" />
+                                <Polygon
+                                    Canvas.Left="150"
+                                    Canvas.Top="1000"
+                                    Fill="White"
+                                    Points="140,292 104,260 66,225 32,188 0,151 199,0 199,92 291,92"
+                                    Tag="{x:Static local:TouchValue.D6}" />
+                                <Polygon
+                                    Canvas.Left="16"
+                                    Canvas.Top="785"
+                                    Fill="White"
+                                    Points="32,150 68,246 133,365 333,214 333,144 296,48 248,0 0,35"
+                                    Tag="{x:Static local:TouchValue.A6}" />
+                                <Polygon
+                                    Canvas.Left="10"
+                                    Canvas.Top="620"
+                                    Fill="White"
+                                    Points="5,199 2,151 0,99 2,49 6,0 253,34 188,99 253,164"
+                                    Tag="{x:Static local:TouchValue.D7}" />
+                                <Polygon
+                                    Canvas.Left="16"
+                                    Canvas.Top="291"
+                                    Fill="White"
+                                    Points="78,101 36,195 0,327 248,362 297,314 333,219 333,151 132,0"
+                                    Tag="{x:Static local:TouchValue.A7}" />
+                                <Polygon
+                                    Canvas.Left="149"
+                                    Canvas.Top="150"
+                                    Fill="White"
+                                    Points="0,140 32,104 67,66 104,32 145,0 298,199 200,199 200,291"
+                                    Tag="{x:Static local:TouchValue.D8}" />
+                                <Polygon
+                                    Canvas.Left="295"
+                                    Canvas.Top="11"
+                                    Fill="White"
+                                    Points="210,28 115,65 0,138 153,338 215,338 311,297 359,249 324,0"
+                                    Tag="{x:Static local:TouchValue.A8}" />
 
-                            <Polygon Canvas.Left="607" Canvas.Top="195" Points="0,113 113,0 226,113 113,226"  Tag="{x:Static local:TouchValue.E1}" Fill="White" />
-                            <Polygon Canvas.Left="720" Canvas.Top="346" Points="0,78 78,0 209,55 209,165 180,195 70,195 0,130"  Tag="{x:Static local:TouchValue.B1}" Fill="White" />
-                            <Polygon Canvas.Left="930" Canvas.Top="350" Points="0,0 0,160 160,160, 160,0 0,0"  Tag="{x:Static local:TouchValue.E2}" Fill="White" />
-                            <Polygon Canvas.Left="900" Canvas.Top="511" Points="117,209 195,132 140,0 30,0 0,30 0,139 65,209"  Tag="{x:Static local:TouchValue.B2}" Fill="White" />
-                            <Polygon Canvas.Left="1020" Canvas.Top="607" Points="0,113 113,0 226,113 113,226"  Tag="{x:Static local:TouchValue.E3}" Fill="White" />
-                            <Polygon Canvas.Left="900" Canvas.Top="721" Points="120,0 198,78 140,208 30,208 0,180 0,71 65,0"  Tag="{x:Static local:TouchValue.B3}" Fill="White" />
-                            <Polygon Canvas.Left="930" Canvas.Top="930" Points="0,0 0,160 160,160, 160,0 0,0"  Tag="{x:Static local:TouchValue.E4}" Fill="White" />
-                            <Polygon Canvas.Left="721" Canvas.Top="901" Points="0,112 87,198 208,140 208,29 177,0 71,0 0,65"  Tag="{x:Static local:TouchValue.B4}" Fill="White" />
-                            <Polygon Canvas.Left="607" Canvas.Top="1013" Points="0,113 113,0 226,113 113,226"  Tag="{x:Static local:TouchValue.E5}" Fill="White" />
-                            <Polygon Canvas.Left="512" Canvas.Top="901" Points="208,112 121,198 0,140 0,29 31,0 137,0 208,65"  Tag="{x:Static local:TouchValue.B5}" Fill="White" />
-                            <Polygon Canvas.Left="350" Canvas.Top="930" Points="0,0 0,160 160,160, 160,0 0,0"  Tag="{x:Static local:TouchValue.E6}" Fill="White" />
-                            <Polygon Canvas.Left="349" Canvas.Top="721" Points="78,0 0,78 58,208 163,208 193,180 193,71 133,0"  Tag="{x:Static local:TouchValue.B6}" Fill="White" />
-                            <Polygon Canvas.Left="200" Canvas.Top="607" Points="0,113 113,0 226,113 113,226"  Tag="{x:Static local:TouchValue.E7}" Fill="White" />
-                            <Polygon Canvas.Left="345" Canvas.Top="511" Points="82,209 0,127 55,0 165,0 195,30 195,139 137,209"  Tag="{x:Static local:TouchValue.B7}" Fill="White" />
-                            <Polygon Canvas.Left="350" Canvas.Top="350" Points="0,0 0,160 160,160, 160,0 0,0"  Tag="{x:Static local:TouchValue.E8}" Fill="White" />
-                            <Polygon Canvas.Left="511" Canvas.Top="346" Points="209,78 131,0 0,55 0,165 29,195 139,195 209,130"  Tag="{x:Static local:TouchValue.B8}" Fill="White" />
+                                <Polygon
+                                    Canvas.Left="607"
+                                    Canvas.Top="195"
+                                    Fill="White"
+                                    Points="0,113 113,0 226,113 113,226"
+                                    Tag="{x:Static local:TouchValue.E1}" />
+                                <Polygon
+                                    Canvas.Left="720"
+                                    Canvas.Top="346"
+                                    Fill="White"
+                                    Points="0,78 78,0 209,55 209,165 180,195 70,195 0,130"
+                                    Tag="{x:Static local:TouchValue.B1}" />
+                                <Polygon
+                                    Canvas.Left="930"
+                                    Canvas.Top="350"
+                                    Fill="White"
+                                    Points="0,0 0,160 160,160, 160,0 0,0"
+                                    Tag="{x:Static local:TouchValue.E2}" />
+                                <Polygon
+                                    Canvas.Left="900"
+                                    Canvas.Top="511"
+                                    Fill="White"
+                                    Points="117,209 195,132 140,0 30,0 0,30 0,139 65,209"
+                                    Tag="{x:Static local:TouchValue.B2}" />
+                                <Polygon
+                                    Canvas.Left="1020"
+                                    Canvas.Top="607"
+                                    Fill="White"
+                                    Points="0,113 113,0 226,113 113,226"
+                                    Tag="{x:Static local:TouchValue.E3}" />
+                                <Polygon
+                                    Canvas.Left="900"
+                                    Canvas.Top="721"
+                                    Fill="White"
+                                    Points="120,0 198,78 140,208 30,208 0,180 0,71 65,0"
+                                    Tag="{x:Static local:TouchValue.B3}" />
+                                <Polygon
+                                    Canvas.Left="930"
+                                    Canvas.Top="930"
+                                    Fill="White"
+                                    Points="0,0 0,160 160,160, 160,0 0,0"
+                                    Tag="{x:Static local:TouchValue.E4}" />
+                                <Polygon
+                                    Canvas.Left="721"
+                                    Canvas.Top="901"
+                                    Fill="White"
+                                    Points="0,112 87,198 208,140 208,29 177,0 71,0 0,65"
+                                    Tag="{x:Static local:TouchValue.B4}" />
+                                <Polygon
+                                    Canvas.Left="607"
+                                    Canvas.Top="1013"
+                                    Fill="White"
+                                    Points="0,113 113,0 226,113 113,226"
+                                    Tag="{x:Static local:TouchValue.E5}" />
+                                <Polygon
+                                    Canvas.Left="512"
+                                    Canvas.Top="901"
+                                    Fill="White"
+                                    Points="208,112 121,198 0,140 0,29 31,0 137,0 208,65"
+                                    Tag="{x:Static local:TouchValue.B5}" />
+                                <Polygon
+                                    Canvas.Left="350"
+                                    Canvas.Top="930"
+                                    Fill="White"
+                                    Points="0,0 0,160 160,160, 160,0 0,0"
+                                    Tag="{x:Static local:TouchValue.E6}" />
+                                <Polygon
+                                    Canvas.Left="349"
+                                    Canvas.Top="721"
+                                    Fill="White"
+                                    Points="78,0 0,78 58,208 163,208 193,180 193,71 133,0"
+                                    Tag="{x:Static local:TouchValue.B6}" />
+                                <Polygon
+                                    Canvas.Left="200"
+                                    Canvas.Top="607"
+                                    Fill="White"
+                                    Points="0,113 113,0 226,113 113,226"
+                                    Tag="{x:Static local:TouchValue.E7}" />
+                                <Polygon
+                                    Canvas.Left="345"
+                                    Canvas.Top="511"
+                                    Fill="White"
+                                    Points="82,209 0,127 55,0 165,0 195,30 195,139 137,209"
+                                    Tag="{x:Static local:TouchValue.B7}" />
+                                <Polygon
+                                    Canvas.Left="350"
+                                    Canvas.Top="350"
+                                    Fill="White"
+                                    Points="0,0 0,160 160,160, 160,0 0,0"
+                                    Tag="{x:Static local:TouchValue.E8}" />
+                                <Polygon
+                                    Canvas.Left="511"
+                                    Canvas.Top="346"
+                                    Fill="White"
+                                    Points="209,78 131,0 0,55 0,165 29,195 139,195 209,130"
+                                    Tag="{x:Static local:TouchValue.B8}" />
 
-                            <Polygon Canvas.Left="720" Canvas.Top="583" Points="0,0 60,0 140,80 140,200 60,280 0,280 0,0" Tag="{x:Static local:TouchValue.C1}" Fill="White" />
-                            <Polygon Canvas.Left="579" Canvas.Top="583" Points="141,280 81,280 0,199 1,81 81,0 141,0 141,280" Tag="{x:Static local:TouchValue.C2}" Fill="White" />
+                                <Polygon
+                                    Canvas.Left="720"
+                                    Canvas.Top="583"
+                                    Fill="White"
+                                    Points="0,0 60,0 140,80 140,200 60,280 0,280 0,0"
+                                    Tag="{x:Static local:TouchValue.C1}" />
+                                <Polygon
+                                    Canvas.Left="579"
+                                    Canvas.Top="583"
+                                    Fill="White"
+                                    Points="141,280 81,280 0,199 1,81 81,0 141,0 141,280"
+                                    Tag="{x:Static local:TouchValue.C2}" />
 
 
-                            <Border x:Name="ResizeGrip" Width="150" Height="90"
-                                    Style="{StaticResource ResizeGripStyle}"
+                                <Border
+                                    x:Name="ResizeGrip"
+                                    Canvas.Left="1290"
+                                    Canvas.Top="1350"
+                                    Width="150"
+                                    Height="90"
+                                    HorizontalAlignment="Center"
+                                    VerticalAlignment="Top"
                                     MouseDown="ResizeGrip_MouseDown"
-                                    Canvas.Left="1290" Canvas.Top="1350"
-                                    HorizontalAlignment="Center" VerticalAlignment="Top">
-                                <TextBlock FontSize="50" Text="{Binding LbTouchPanelResize}"
-                                           VerticalAlignment="Center" HorizontalAlignment="Center" d:Text="Resize"/>
-                            </Border>
+                                    Style="{StaticResource ResizeGripStyle}">
+                                    <TextBlock
+                                        HorizontalAlignment="Center"
+                                        VerticalAlignment="Center"
+                                        d:Text="Resize"
+                                        FontSize="50"
+                                        Text="{Binding LbTouchPanelResize}" />
+                                </Border>
 
-                        </Canvas>
+                            </Canvas>
+                            <!--  HwndHost input surface will be added programmatically as an overlay here  -->
+                        </Grid>
                     </Border>
                 </Viewbox>
             </DockPanel>

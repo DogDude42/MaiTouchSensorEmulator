@@ -7,6 +7,8 @@ using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
 using WpfMaiTouchEmulator.Managers;
+using System.Linq;
+using System.Windows.Controls;
 
 namespace WpfMaiTouchEmulator;
 /// <summary>
@@ -25,6 +27,17 @@ public partial class TouchPanel : Window
     private bool isRingButtonEmulationEnabled = Properties.Settings.Default.IsRingButtonEmulationEnabled;
     private bool hasRepositioned = false;
 
+    // Low-latency pointer path state and precomputed geometry
+    private readonly Dictionary<uint, PointerTrack> _pointerStates = new();
+    private readonly Dictionary<TouchValue, int> _sensorHoldCounts = new();
+    private readonly Dictionary<TouchValue, Polygon> _polygonByValue = new();
+    private readonly Dictionary<char, List<(double angleDeg, TouchValue value)>> _ringAngleMaps = new();
+    private readonly Dictionary<char, double> _ringRadius = new();
+    private double _centerX = 720.0, _centerY = 720.0;
+    private double _radiusThresh_AD, _radiusThresh_DB, _radiusThresh_BE, _centerRadius;
+    private double _contactRadiusPx = 1.0; // hardcoded touch radius (canvas pixels)
+    private int _circleSampleCount = 16;     // points on contact circle
+
     private enum ResizeDirection
     {
         BottomRight = 8,
@@ -37,6 +50,8 @@ public partial class TouchPanel : Window
     [DllImport("user32.dll", CharSet = CharSet.Auto)]
     private static extern int SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
 
+    // Input is handled exclusively in InputSurfaceHost
+
 
     [StructLayout(LayoutKind.Sequential)]
     public struct RECT
@@ -46,6 +61,26 @@ public partial class TouchPanel : Window
         public int Right;
         public int Bottom;
     }
+
+    // Internal action constants for host → panel routing
+    private const int ACT_DOWN = 1;
+    private const int ACT_MOVE = 2;
+    private const int ACT_UP = 3;
+
+    // (No WM_POINTER structures here)
+
+    private sealed class PointerTrack
+    {
+        public Point Last { get; }
+        public HashSet<TouchValue> Current { get; }
+        public PointerTrack(Point last, HashSet<TouchValue> current)
+        {
+            Last = last;
+            Current = current;
+        }
+    }
+
+    // (No WM_TOUCH interop here)
 
     public enum SizingEdge
     {
@@ -69,14 +104,19 @@ public partial class TouchPanel : Window
         Topmost = true;
         _positionManager = new TouchPanelPositionManager();
         Loaded += Window_Loaded;
-        Touch.FrameReported += OnTouchFrameReported;
+        // Replaced legacy WPF Touch path with low-latency WM_POINTER handling
+        // Touch.FrameReported += OnTouchFrameReported;
     }
 
 
     protected override void OnSourceInitialized(EventArgs e)
     {
         base.OnSourceInitialized(e);
-        var source = HwndSource.FromHwnd(new WindowInteropHelper(this).Handle);
+        // Disable WPF Stylus/Touch pipeline to avoid latency
+        try { System.AppContext.SetSwitch("Switch.System.Windows.Input.Stylus.DisableStylusAndTouchSupport", true); } catch { }
+
+        var hwnd = new WindowInteropHelper(this).Handle;
+        var source = HwndSource.FromHwnd(hwnd);
         source.AddHook(WndProc);
     }
 
@@ -91,7 +131,30 @@ public partial class TouchPanel : Window
             Marshal.StructureToPtr(rect, lParam, true);
             handled = true;
         }
+        else if (msg == 0x0084 /* WM_NCHITTEST */)
+        {
+            // Force the entire window surface to be interactive for hit-testing.
+            // This helps ensure touch targets this window rather than passing through.
+            handled = true;
+            return new IntPtr(1 /* HTCLIENT */);
+        }
         return IntPtr.Zero;
+    }
+
+    // Entry points for the native child host
+    internal void HostPointerDown(uint id, double screenX, double screenY) => ProcessScreenPointer(id, ACT_DOWN, new Point(screenX, screenY));
+    internal void HostPointerMove(uint id, double screenX, double screenY) => ProcessScreenPointer(id, ACT_MOVE, new Point(screenX, screenY));
+    internal void HostPointerUp(uint id, double screenX, double screenY) => ProcessScreenPointer(id, ACT_UP, new Point(screenX, screenY));
+
+    private void ProcessScreenPointer(uint id, int action, Point screenPoint)
+    {
+        var canvasPoint = TouchCanvas.PointFromScreen(screenPoint);
+        if (action == ACT_DOWN)
+            HandlePointerDown(id, canvasPoint);
+        else if (action == ACT_MOVE)
+            HandlePointerUpdate(id, canvasPoint);
+        else if (action == ACT_UP)
+            HandlePointerUp(id, canvasPoint);
     }
 
     private void EnforceAspectRatio(ref RECT rect, SizingEdge edge)
@@ -130,7 +193,32 @@ public partial class TouchPanel : Window
     private void Window_Loaded(object sender, RoutedEventArgs e)
     {
         buttons = VisualTreeHelperExtensions.FindVisualChildren<Polygon>(this);
+        _polygonByValue.Clear();
+        foreach (var p in buttons)
+        {
+            if (p.Tag is TouchValue tv)
+            {
+                _polygonByValue[tv] = p;
+            }
+        }
+        BuildPolarMapping();
         DeselectAllItems();
+
+        try
+        {
+            var host = new InputSurfaceHost(this)
+            {
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                VerticalAlignment = VerticalAlignment.Stretch,
+                Width = double.NaN,
+                Height = double.NaN,
+            };
+            TouchGrid.Children.Add(host);
+        }
+        catch (Exception ex)
+        {
+            if (isDebugEnabled) Logger.Error("Failed to create InputSurfaceHost", ex);
+        }
     }
 
     public void PositionTouchPanel()
@@ -174,102 +262,7 @@ public partial class TouchPanel : Window
         SendMessage(new WindowInteropHelper(this).Handle, 0x112, (IntPtr)(0xF000 + (int)edge), IntPtr.Zero);
     }
 
-    private void OnTouchFrameReported(object sender, TouchFrameEventArgs e)
-    {
-        var currentTouchPoints = e.GetTouchPoints(this);
-        var currentIds = new HashSet<int>();
-
-        foreach (var touch in currentTouchPoints)
-        {
-            var id = touch.TouchDevice.Id;
-
-            // If the touch is released, process it as a TouchUp.
-            if (touch.Action == TouchAction.Up)
-            {
-                if (activeTouches.TryGetValue(id, out var touchInfo2))
-                {
-                    if (activeTouches.Values.Count(v => v.polygon == touchInfo2.polygon) == 1)
-                    {
-                        HighlightElement(touchInfo2.polygon, false);
-                        onRelease?.Invoke((TouchValue)touchInfo2.polygon.Tag);
-                        if (isRingButtonEmulationEnabled)
-                        {
-                            RingButtonEmulator.ReleaseButton((TouchValue)touchInfo2.polygon.Tag);
-                        }
-                    }
-                    activeTouches.Remove(id);
-                }
-                continue;
-            }
-
-            currentIds.Add(id);
-
-            // New touch (TouchDown)
-            if (!activeTouches.TryGetValue(id, out var touchInfo))
-            {
-                if (VisualTreeHelper.HitTest(this, touch.Position)?.VisualHit is Polygon polygon)
-                {
-                    HighlightElement(polygon, true);
-                    activeTouches[id] = (polygon, touch.Position);
-                    onTouch?.Invoke((TouchValue)polygon.Tag);
-                    if (isRingButtonEmulationEnabled && RingButtonEmulator.HasRingButtonMapping((TouchValue)polygon.Tag))
-                    {
-                        RingButtonEmulator.PressButton((TouchValue)polygon.Tag);
-                    }
-                }
-            }
-            // Existing touch (TouchMove)
-            else
-            {
-                var previousPosition = touchInfo.lastPoint;
-                var currentPosition = touch.Position;
-                var sampleCount = 10;
-                var changed = false;
-
-                for (var i = 1; i <= sampleCount; i++)
-                {
-                    var t = (double)i / sampleCount;
-                    var samplePoint = new Point(
-                        previousPosition.X + (currentPosition.X - previousPosition.X) * t,
-                        previousPosition.Y + (currentPosition.Y - previousPosition.Y) * t);
-                    if (VisualTreeHelper.HitTest(this, samplePoint)?.VisualHit is Polygon polygon && polygon != touchInfo.polygon)
-                    {
-                        if (activeTouches.Values.Count(v => v.polygon == touchInfo.polygon) == 1)
-                        {
-                            HighlightElement(touchInfo.polygon, false);
-                            onRelease?.Invoke((TouchValue)touchInfo.polygon.Tag);
-                        }
-                        HighlightElement(polygon, true);
-                        onTouch?.Invoke((TouchValue)polygon.Tag);
-                        activeTouches[id] = (polygon, samplePoint);
-                        changed = true;
-                        break;
-                    }
-                }
-                if (!changed)
-                {
-                    activeTouches[id] = (touchInfo.polygon, currentPosition);
-                }
-            }
-        }
-
-        // Process any touches that might not be reported this frame.
-        var endedTouches = activeTouches.Keys.Except(currentIds).ToList();
-        foreach (var id in endedTouches)
-        {
-            var touchInfo = activeTouches[id];
-            if (activeTouches.Values.Count(v => v.polygon == touchInfo.polygon) == 1)
-            {
-                HighlightElement(touchInfo.polygon, false);
-                onRelease?.Invoke((TouchValue)touchInfo.polygon.Tag);
-                if (isRingButtonEmulationEnabled)
-                {
-                    RingButtonEmulator.ReleaseButton((TouchValue)touchInfo.polygon.Tag);
-                }
-            }
-            activeTouches.Remove(id);
-        }
-    }
+    // Legacy WPF Touch Frame path removed; input handled by native host
 
     private void DeselectAllItems()
     {
@@ -729,5 +722,288 @@ public partial class TouchPanel : Window
                 element.Opacity = highlight ? 0.8 : 0.3;
             });
         }
+    }
+
+    // --- Low-latency pointer processing + polar mapping ---
+
+    private void HandlePointerDown(uint id, Point canvasPoint)
+    {
+        var set = SensorsAtPoint(canvasPoint);
+        foreach (var v in set) PressSensor(v);
+        _pointerStates[id] = new PointerTrack(canvasPoint, set);
+    }
+
+    private void HandlePointerUpdate(uint id, Point canvasPoint)
+    {
+        if (!_pointerStates.TryGetValue(id, out var track))
+        {
+            HandlePointerDown(id, canvasPoint);
+            return;
+        }
+
+        var from = track.Last;
+        var to = canvasPoint;
+        var nextSet = SensorsAlongPath(from, to);
+
+        // Diff sets
+        foreach (var v in nextSet)
+        {
+            if (!track.Current.Contains(v)) PressSensor(v);
+        }
+        foreach (var v in track.Current)
+        {
+            if (!nextSet.Contains(v)) ReleaseSensor(v);
+        }
+
+        _pointerStates[id] = new PointerTrack(canvasPoint, nextSet);
+    }
+
+    private void HandlePointerUp(uint id, Point canvasPoint)
+    {
+        if (_pointerStates.TryGetValue(id, out var track))
+        {
+            foreach (var v in track.Current) ReleaseSensor(v);
+            _pointerStates.Remove(id);
+        }
+    }
+
+    private HashSet<TouchValue> SensorsAlongPath(Point from, Point to)
+    {
+        var dx = to.X - from.X;
+        var dy = to.Y - from.Y;
+        var dist = Math.Sqrt(dx * dx + dy * dy);
+        var steps = Math.Max(1, (int)(dist / 3));
+        var result = new HashSet<TouchValue>();
+        for (int i = 0; i <= steps; i++)
+        {
+            var t = steps == 0 ? 1.0 : (double)i / steps;
+            var p = new Point(from.X + dx * t, from.Y + dy * t);
+            var set = SensorsAtPoint(p);
+            result.UnionWith(set);
+        }
+        return result;
+    }
+
+    private HashSet<TouchValue> SensorsAtPoint(Point p)
+    {
+        var set = new HashSet<TouchValue>();
+        void Add(Point q)
+        {
+            var mv = MapPointToTouchValue(q);
+            if (mv.HasValue) set.Add(mv.Value);
+        }
+        Add(p);
+        var r = _contactRadiusPx;
+        int n = Math.Max(8, _circleSampleCount);
+        for (int i = 0; i < n; i++)
+        {
+            var ang = (i * 2.0 * Math.PI) / n;
+            var q = new Point(p.X + r * Math.Cos(ang), p.Y + r * Math.Sin(ang));
+            Add(q);
+        }
+        // inner ring to catch narrow gaps
+        var ri = r * 0.5;
+        for (int i = 0; i < n; i++)
+        {
+            var ang = (i * 2.0 * Math.PI) / n;
+            var q = new Point(p.X + ri * Math.Cos(ang), p.Y + ri * Math.Sin(ang));
+            Add(q);
+        }
+        return set;
+    }
+
+    private void PressSensor(TouchValue v)
+    {
+        if (!_sensorHoldCounts.TryGetValue(v, out var c)) c = 0;
+        _sensorHoldCounts[v] = c + 1;
+        if (c == 0)
+        {
+            onTouch?.Invoke(v);
+            if (isRingButtonEmulationEnabled && RingButtonEmulator.HasRingButtonMapping(v))
+            {
+                RingButtonEmulator.PressButton(v);
+            }
+            if (_polygonByValue.TryGetValue(v, out var poly)) HighlightElement(poly, true);
+        }
+    }
+
+    private void ReleaseSensor(TouchValue v)
+    {
+        if (!_sensorHoldCounts.TryGetValue(v, out var c)) return;
+        c--;
+        if (c <= 0)
+        {
+            _sensorHoldCounts.Remove(v);
+            onRelease?.Invoke(v);
+            if (isRingButtonEmulationEnabled)
+            {
+                RingButtonEmulator.ReleaseButton(v);
+            }
+            if (_polygonByValue.TryGetValue(v, out var poly)) HighlightElement(poly, false);
+        }
+        else
+        {
+            _sensorHoldCounts[v] = c;
+        }
+    }
+
+    private void BuildPolarMapping()
+    {
+        // Derive center from C1/C2 if available
+        Point? c1 = null, c2 = null;
+        if (_polygonByValue.TryGetValue(TouchValue.C1, out var pC1)) c1 = GetPolygonCentroid(pC1);
+        if (_polygonByValue.TryGetValue(TouchValue.C2, out var pC2)) c2 = GetPolygonCentroid(pC2);
+        if (c1.HasValue && c2.HasValue)
+        {
+            _centerX = (c1.Value.X + c2.Value.X) / 2.0;
+            _centerY = (c1.Value.Y + c2.Value.Y) / 2.0;
+        }
+        else
+        {
+            _centerX = TouchCanvas.Width / 2.0;
+            _centerY = TouchCanvas.Height / 2.0;
+        }
+
+        _ringAngleMaps.Clear();
+        _ringRadius.Clear();
+        var ringMinR = new Dictionary<char, double> { ['A']=double.PositiveInfinity, ['D']=double.PositiveInfinity, ['B']=double.PositiveInfinity, ['E']=double.PositiveInfinity };
+        var ringMaxR = new Dictionary<char, double> { ['A']=0.0, ['D']=0.0, ['B']=0.0, ['E']=0.0 };
+        var groups = new Dictionary<char, List<(double r, double ang, TouchValue v)>>
+        {
+            ['A'] = new(), ['B'] = new(), ['D'] = new(), ['E'] = new()
+        };
+
+        foreach (var kv in _polygonByValue)
+        {
+            var v = kv.Key;
+            var name = Enum.GetName(typeof(TouchValue), v);
+            if (string.IsNullOrEmpty(name) || name!.Length < 2) continue;
+            var letter = name![0];
+            if (!groups.ContainsKey(letter)) continue;
+            var centroid = GetPolygonCentroid(kv.Value);
+            var dx = centroid.X - _centerX;
+            var dy = centroid.Y - _centerY;
+            var r = Math.Sqrt(dx * dx + dy * dy);
+            var ang = (Math.Atan2(dy, dx) * 180.0 / Math.PI + 360.0) % 360.0;
+            groups[letter].Add((r, ang, v));
+
+            // Track radial extents from all polygon vertices
+            double left = Canvas.GetLeft(kv.Value); if (double.IsNaN(left)) left = 0;
+            double top = Canvas.GetTop(kv.Value); if (double.IsNaN(top)) top = 0;
+            double pMin = double.PositiveInfinity, pMax = 0.0;
+            foreach (var pt in kv.Value.Points)
+            {
+                var ax = left + pt.X;
+                var ay = top + pt.Y;
+                var rx = ax - _centerX;
+                var ry = ay - _centerY;
+                var rr = Math.Sqrt(rx * rx + ry * ry);
+                if (rr < pMin) pMin = rr;
+                if (rr > pMax) pMax = rr;
+            }
+            if (pMin < double.PositiveInfinity)
+            {
+                if (pMin < ringMinR[letter]) ringMinR[letter] = pMin;
+                if (pMax > ringMaxR[letter]) ringMaxR[letter] = pMax;
+            }
+        }
+
+        foreach (var letter in groups.Keys)
+        {
+            var lst = groups[letter];
+            if (lst.Count > 0)
+            {
+                _ringRadius[letter] = lst.Average(x => x.r);
+                _ringAngleMaps[letter] = lst.OrderBy(x => x.ang).Select(x => (x.ang, x.v)).ToList();
+            }
+        }
+
+        // Radius thresholds between rings using ring edge extents (more robust)
+        // Fall back to averages if missing.
+        double raMin = ringMinR.ContainsKey('A') && !double.IsPositiveInfinity(ringMinR['A']) ? ringMinR['A'] : _ringRadius.GetValueOrDefault('A', 700);
+        double rdMax = ringMaxR.ContainsKey('D') ? ringMaxR['D'] : _ringRadius.GetValueOrDefault('D', 550);
+        double rdMin = ringMinR.ContainsKey('D') && !double.IsPositiveInfinity(ringMinR['D']) ? ringMinR['D'] : _ringRadius.GetValueOrDefault('D', 550);
+        double rbMax = ringMaxR.ContainsKey('B') ? ringMaxR['B'] : _ringRadius.GetValueOrDefault('B', 400);
+        double rbMin = ringMinR.ContainsKey('B') && !double.IsPositiveInfinity(ringMinR['B']) ? ringMinR['B'] : _ringRadius.GetValueOrDefault('B', 400);
+        double reMax = ringMaxR.ContainsKey('E') ? ringMaxR['E'] : _ringRadius.GetValueOrDefault('E', 275);
+
+        _radiusThresh_AD = (raMin + rdMax) / 2.0;
+        _radiusThresh_DB = (rdMin + rbMax) / 2.0;
+        _radiusThresh_BE = (rbMin + reMax) / 2.0;
+
+        // Center radius: max of C1/C2 vertices distance from center (fall back to small radius)
+        double centerMax = 0.0;
+        foreach (var kv in _polygonByValue)
+        {
+            if (kv.Key == TouchValue.C1 || kv.Key == TouchValue.C2)
+            {
+                foreach (var pt in kv.Value.Points)
+                {
+                    var left = Canvas.GetLeft(kv.Value); if (double.IsNaN(left)) left = 0;
+                    var top = Canvas.GetTop(kv.Value); if (double.IsNaN(top)) top = 0;
+                    var ax = left + pt.X;
+                    var ay = top + pt.Y;
+                    var dx = ax - _centerX;
+                    var dy = ay - _centerY;
+                    var r = Math.Sqrt(dx * dx + dy * dy);
+                    if (r > centerMax) centerMax = r;
+                }
+            }
+        }
+        _centerRadius = Math.Max(40, centerMax);
+    }
+
+    private static Point GetPolygonCentroid(Polygon poly)
+    {
+        double left = Canvas.GetLeft(poly); if (double.IsNaN(left)) left = 0;
+        double top = Canvas.GetTop(poly); if (double.IsNaN(top)) top = 0;
+        if (poly.Points.Count == 0) return new Point(left, top);
+        double sx = 0, sy = 0;
+        foreach (var p in poly.Points) { sx += p.X; sy += p.Y; }
+        return new Point(left + sx / poly.Points.Count, top + sy / poly.Points.Count);
+    }
+
+    private TouchValue? MapPointToTouchValue(Point canvasPoint)
+    {
+        var dx = canvasPoint.X - _centerX;
+        var dy = canvasPoint.Y - _centerY;
+        var r = Math.Sqrt(dx * dx + dy * dy);
+        var ang = (Math.Atan2(dy, dx) * 180.0 / Math.PI + 360.0) % 360.0;
+
+        if (r <= _centerRadius)
+        {
+            return canvasPoint.X >= _centerX ? TouchValue.C1 : TouchValue.C2;
+        }
+
+        char ring;
+        if (r >= _radiusThresh_AD) ring = 'A';
+        else if (r >= _radiusThresh_DB) ring = 'D';
+        else if (r >= _radiusThresh_BE) ring = 'B';
+        else ring = 'E';
+
+        if (!_ringAngleMaps.TryGetValue(ring, out var map) || map.Count == 0)
+        {
+            return null;
+        }
+
+        double bestDiff = double.MaxValue;
+        TouchValue best = map[0].value;
+        foreach (var (a, v) in map)
+        {
+            var diff = Math.Abs(Norm180(ang - a));
+            if (diff < bestDiff)
+            {
+                bestDiff = diff;
+                best = v;
+            }
+        }
+        return best;
+    }
+
+    private static double Norm180(double ang)
+    {
+        ang = (ang + 180.0) % 360.0;
+        if (ang < 0) ang += 360.0;
+        return ang - 180.0;
     }
 }
