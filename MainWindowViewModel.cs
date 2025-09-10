@@ -16,6 +16,10 @@ public class MainWindowViewModel : INotifyPropertyChanged
     {
         get; set;
     }
+    public string? LbTouchRadius
+    {
+        get; set;
+    }
     public string? LbButtonState
     {
         get; set;
@@ -222,6 +226,11 @@ public class MainWindowViewModel : INotifyPropertyChanged
         get;
         private set;
     }
+    public string? LbTouchRadiusTT
+    {
+        get;
+        private set;
+    }
     public string? LbExitWithSinmaiTT
     {
         get;
@@ -241,6 +250,7 @@ public class MainWindowViewModel : INotifyPropertyChanged
     private CultureInfo _selectedLanguage;
     private bool _isRingButtonEmulationEnabled;
     private string _borderColour;
+    private int _contactRadiusPx;
     private readonly ResourceManager resourceManager;
     private readonly CultureInfo cultureInfo;
 
@@ -329,6 +339,20 @@ public class MainWindowViewModel : INotifyPropertyChanged
         }
     }
 
+    public int ContactRadiusPx
+    {
+        get => _contactRadiusPx;
+        set
+        {
+            var clamped = Math.Max(10, value);
+            if (_contactRadiusPx == clamped) return;
+            _contactRadiusPx = clamped;
+            Properties.Settings.Default.ContactRadiusPx = _contactRadiusPx;
+            Properties.Settings.Default.Save();
+            OnPropertyChanged();
+        }
+    }
+
     public string BorderColour
     {
         get => _borderColour;
@@ -368,6 +392,7 @@ public class MainWindowViewModel : INotifyPropertyChanged
     {
         LbAutoPortConnecting = resourceManager.GetString("lbAutoPortConnecting");
         LbAutoSensorPositioning = resourceManager.GetString("lbAutoSensorPositioning");
+        LbTouchRadius = resourceManager.GetString("lbTouchRadius");
         LbButtonState = resourceManager.GetString("lbButtonState");
         LbConnectionState = resourceManager.GetString("lbConnectionState");
         LbConnectionStateNotConnected = resourceManager.GetString("lbConnectionStateNotConnected");
@@ -400,6 +425,7 @@ public class MainWindowViewModel : INotifyPropertyChanged
         LbAutoPortConnectingTT = resourceManager.GetString("lbAutoPortConnectingTT");
         LbDebugModeTT = resourceManager.GetString("lbDebugModeTT");
         LbAutoSensorPositioningTT = resourceManager.GetString("lbAutoSensorPositioningTT");
+        LbTouchRadiusTT = resourceManager.GetString("lbTouchRadiusTT");
         LbExitWithSinmaiTT = resourceManager.GetString("lbExitWithSinmaiTT");
         LbEmulateRingButtonsTT = resourceManager.GetString("lbEmulateRingButtonsTT");
         LbMenuCategoryHelp = resourceManager.GetString("lbMenuCategoryHelp");

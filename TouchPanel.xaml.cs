@@ -20,7 +20,7 @@ public partial class TouchPanel : Window
     internal Action<TouchValue>? onRelease;
     internal Action? onInitialReposition;
 
-    private readonly Dictionary<int, (Polygon polygon, Point lastPoint)> activeTouches = new();
+    private readonly Dictionary<int, (Polygon polygon, Point lastPoint)> activeTouches = [];
     private readonly TouchPanelPositionManager _positionManager;
     private List<Polygon> buttons = [];
     private bool isDebugEnabled = Properties.Settings.Default.IsDebugEnabled;
@@ -28,11 +28,12 @@ public partial class TouchPanel : Window
     private bool hasRepositioned = false;
 
     // Low-latency pointer path state and precomputed geometry
-    private readonly Dictionary<uint, PointerTrack> _pointerStates = new();
-    private readonly Dictionary<TouchValue, int> _sensorHoldCounts = new();
-    private readonly Dictionary<TouchValue, Polygon> _polygonByValue = new();
-    private double _contactRadiusPx = 50.0; // hardcoded touch radius (canvas pixels)
-    private int _circleSampleCount = 16;     // points on contact circle
+    private readonly Dictionary<uint, PointerTrack> _pointerStates = [];
+    private readonly Dictionary<TouchValue, int> _sensorHoldCounts = [];
+    private readonly Dictionary<TouchValue, Polygon> _polygonByValue = [];
+    private double _contactRadiusPx; // canvas pixels (overridden by settings)
+    private readonly int _circleSampleCount = 16;     // points on contact circle
+    private readonly Dictionary<uint, Ellipse> _debugEllipses = [];
 
     private enum ResizeDirection
     {
@@ -102,6 +103,19 @@ public partial class TouchPanel : Window
         Loaded += Window_Loaded;
         // Replaced legacy WPF Touch path with low-latency WM_POINTER handling
         // Touch.FrameReported += OnTouchFrameReported;
+        try
+        {
+            _contactRadiusPx = Math.Max(10, Properties.Settings.Default.ContactRadiusPx);
+            Properties.Settings.Default.PropertyChanged += (s, e) =>
+            {
+                if (e.PropertyName == nameof(Properties.Settings.Default.ContactRadiusPx))
+                {
+                    _contactRadiusPx = Math.Max(10, Properties.Settings.Default.ContactRadiusPx);
+                    Application.Current.Dispatcher.Invoke(UpdateAllDebugEllipseSizes);
+                }
+            };
+        }
+        catch { }
     }
 
 
@@ -278,6 +292,22 @@ public partial class TouchPanel : Window
         {
             button.Opacity = enabled ? 0.3 : 0;
         });
+        if (!enabled)
+        {
+            foreach (var kv in _debugEllipses.ToList())
+            {
+                TouchCanvas.Children.Remove(kv.Value);
+                _debugEllipses.Remove(kv.Key);
+            }
+        }
+        else
+        {
+            foreach (var kv in _pointerStates)
+            {
+                EnsureDebugEllipse(kv.Key);
+                UpdateDebugEllipse(kv.Key, kv.Value.Last);
+            }
+        }
     }
 
     public void SetLargeButtonMode(bool enabled)
@@ -320,156 +350,156 @@ public partial class TouchPanel : Window
 
         if (enabled)
         {
-            d1.Points = new PointCollection
-            {
+            d1.Points =
+            [
                 new Point(-5, -50),
                 new Point(205, -50),
                 new Point(165, 253),
                 new Point(100, 188),
                 new Point(35, 253),
-            };
+            ];
 
-            a1.Points = new PointCollection
-            {
+            a1.Points =
+            [
                 new Point(495, -50),
                 new Point(208, 338),
                 new Point(145, 338),
                 new Point(49, 297),
                 new Point(0, 249),
                 new Point(42, -55),
-            };
-            d2.Points = new PointCollection
-            {
+            ];
+            d2.Points =
+            [
                 new Point(290, -182),
                 new Point(500, -180),
                 new Point(500, -5),
                 new Point(96, 297),
                 new Point(96, 205),
                 new Point(0, 205),
-            };
-            a2.Points = new PointCollection
-            {
+            ];
+            a2.Points =
+            [
                 new Point(405, 317),
                 new Point(91, 362),
                 new Point(42, 314),
                 new Point(0, 219),
                 new Point(0, 150),
                 new Point(405, -150),
-            };
-            d3.Points = new PointCollection
-            {
+            ];
+            d3.Points =
+            [
                 new Point(315, -10),
                 new Point(315, 208),
                 new Point(0, 165),
                 new Point(65, 100),
                 new Point(0, 35),
-            };
-            a3.Points = new PointCollection
-            {
+            ];
+            a3.Points =
+            [
                 new Point(406, 520),
                 new Point(0, 213),
                 new Point(0, 144),
                 new Point(41, 48),
                 new Point(89, 0),
                 new Point(406, 43),
-            };
-            d4.Points = new PointCollection
-            {
+            ];
+            d4.Points =
+            [
                 new Point(500, 309),
                 new Point(500, 491),
                 new Point(305, 491),
                 new Point(0, 92),
                 new Point(92, 92),
                 new Point(92, 0),
-            };
-            a4.Points = new PointCollection
-            {
+            ];
+            a4.Points =
+            [
                 new Point(45, 400),
                 new Point(0, 83),
                 new Point(48, 35),
                 new Point(144, 0),
                 new Point(212, 0),
                 new Point(515, 400),
-            };
-            d5.Points = new PointCollection
-            {
+            ];
+            d5.Points =
+            [
                 new Point(208, 317),
                 new Point(-10, 317),
                 new Point(34, 0),
                 new Point(99, 65),
                 new Point(164, 0),
-            };
+            ];
 
-            a5.Points = new PointCollection
-            {
+            a5.Points =
+            [
                 new Point(317, 400),
                 new Point(363, 83),
                 new Point(316, 35),
                 new Point(220, 0),
                 new Point(152, 0),
                 new Point(-150, 400),
-            };
-            d6.Points = new PointCollection
-            {
+            ];
+            d6.Points =
+            [
                 new Point(-10, 492),
                 new Point(-200, 492),
                 new Point(-200, 295),
                 new Point(199, 0),
                 new Point(199, 92),
                 new Point(291, 92),
-            };
-            a6.Points = new PointCollection
-            {
+            ];
+            a6.Points =
+            [
                 new Point(-67, 505),
                 new Point(333, 214),
                 new Point(333, 144),
                 new Point(296, 48),
                 new Point(248, 0),
                 new Point(-67, 45),
-            };
+            ];
 
-            d7.Points = new PointCollection
-            {
+            d7.Points =
+            [
                 new Point(-60, 207),
                 new Point(-60, -7),
                 new Point(253, 34),
                 new Point(188, 99),
                 new Point(253, 164),
-            };
+            ];
 
-            a7.Points = new PointCollection
-            {
+            a7.Points =
+            [
                 new Point(-65, 320),
                 new Point(248, 362),
                 new Point(297, 314),
                 new Point(333, 219),
                 new Point(333, 151),
                 new Point(-65, -150),
-            };
-            d8.Points = new PointCollection
-            {
+            ];
+            d8.Points =
+            [
                 new Point(-195, -10),
                 new Point(-195, -195),
                 new Point(-5, -195),
                 new Point(298, 199),
                 new Point(200, 199),
                 new Point(200, 291),
-            };
+            ];
 
-            a8.Points = new PointCollection
-            {
+            a8.Points =
+            [
                 new Point(-148, -55),
                 new Point(153, 338),
                 new Point(215, 338),
                 new Point(311, 297),
                 new Point(359, 249),
                 new Point(318, -55),
-            };
+            ];
         }
         else
         {
-            d1.Points = new PointCollection
-            {
+            d1.Points =
+            [
                 new Point(0, 5),
                 new Point(50, 2),
                 new Point(100, 0),
@@ -478,10 +508,10 @@ public partial class TouchPanel : Window
                 new Point(165, 253),
                 new Point(100, 188),
                 new Point(35, 253),
-            };
+            ];
 
-            a1.Points = new PointCollection
-            {
+            a1.Points =
+            [
                 new Point(150, 28),
                 new Point(245, 65),
                 new Point(360, 133),
@@ -490,10 +520,10 @@ public partial class TouchPanel : Window
                 new Point(49, 297),
                 new Point(0, 249),
                 new Point(35, 0),
-            };
+            ];
 
-            d2.Points = new PointCollection
-            {
+            d2.Points =
+            [
                 new Point(153, 0),
                 new Point(187, 32),
                 new Point(225, 67),
@@ -502,10 +532,10 @@ public partial class TouchPanel : Window
                 new Point(96, 297),
                 new Point(96, 205),
                 new Point(0, 205),
-            };
+            ];
 
-            a2.Points = new PointCollection
-            {
+            a2.Points =
+            [
                 new Point(261, 101),
                 new Point(303, 195),
                 new Point(339, 327),
@@ -514,10 +544,10 @@ public partial class TouchPanel : Window
                 new Point(0, 219),
                 new Point(0, 150),
                 new Point(202, 0),
-            };
+            ];
 
-            d3.Points = new PointCollection
-            {
+            d3.Points =
+            [
                 new Point(248, 0),
                 new Point(251, 48),
                 new Point(253, 100),
@@ -526,10 +556,10 @@ public partial class TouchPanel : Window
                 new Point(0, 165),
                 new Point(65, 100),
                 new Point(0, 35),
-            };
+            ];
 
-            a3.Points = new PointCollection
-            {
+            a3.Points =
+            [
                 new Point(305, 150),
                 new Point(269, 246),
                 new Point(201, 364),
@@ -538,10 +568,10 @@ public partial class TouchPanel : Window
                 new Point(41, 48),
                 new Point(89, 0),
                 new Point(337, 34),
-            };
+            ];
 
-            d4.Points = new PointCollection
-            {
+            d4.Points =
+            [
                 new Point(292, 151),
                 new Point(260, 187),
                 new Point(225, 225),
@@ -550,10 +580,10 @@ public partial class TouchPanel : Window
                 new Point(0, 92),
                 new Point(92, 92),
                 new Point(92, 0),
-            };
+            ];
 
-            a4.Points = new PointCollection
-            {
+            a4.Points =
+            [
                 new Point(260, 259),
                 new Point(167, 301),
                 new Point(37, 335),
@@ -562,10 +592,10 @@ public partial class TouchPanel : Window
                 new Point(144, 0),
                 new Point(212, 0),
                 new Point(364, 200),
-            };
+            ];
 
-            d5.Points = new PointCollection
-            {
+            d5.Points =
+            [
                 new Point(199, 252),
                 new Point(151, 255),
                 new Point(99, 257),
@@ -574,10 +604,10 @@ public partial class TouchPanel : Window
                 new Point(34, 0),
                 new Point(99, 65),
                 new Point(164, 0),
-            };
+            ];
 
-            a5.Points = new PointCollection
-            {
+            a5.Points =
+            [
                 new Point(104, 259),
                 new Point(197, 301),
                 new Point(327, 335),
@@ -586,10 +616,10 @@ public partial class TouchPanel : Window
                 new Point(220, 0),
                 new Point(152, 0),
                 new Point(0, 201),
-            };
+            ];
 
-            d6.Points = new PointCollection
-            {
+            d6.Points =
+            [
                 new Point(140, 292),
                 new Point(104, 260),
                 new Point(66, 225),
@@ -598,10 +628,10 @@ public partial class TouchPanel : Window
                 new Point(199, 0),
                 new Point(199, 92),
                 new Point(291, 92),
-            };
+            ];
 
-            a6.Points = new PointCollection
-            {
+            a6.Points =
+            [
                 new Point(32, 150),
                 new Point(68, 246),
                 new Point(133, 365),
@@ -610,10 +640,10 @@ public partial class TouchPanel : Window
                 new Point(296, 48),
                 new Point(248, 0),
                 new Point(0, 35),
-            };
+            ];
 
-            d7.Points = new PointCollection
-            {
+            d7.Points =
+            [
                 new Point(5, 199),
                 new Point(2, 151),
                 new Point(0, 99),
@@ -622,10 +652,10 @@ public partial class TouchPanel : Window
                 new Point(253, 34),
                 new Point(188, 99),
                 new Point(253, 164),
-            };
+            ];
 
-            a7.Points = new PointCollection
-            {
+            a7.Points =
+            [
                 new Point(78, 101),
                 new Point(36, 195),
                 new Point(0, 327),
@@ -634,10 +664,10 @@ public partial class TouchPanel : Window
                 new Point(333, 219),
                 new Point(333, 151),
                 new Point(132, 0),
-            };
+            ];
 
-            d8.Points = new PointCollection
-            {
+            d8.Points =
+            [
                 new Point(0, 140),
                 new Point(32, 104),
                 new Point(67, 66),
@@ -646,10 +676,10 @@ public partial class TouchPanel : Window
                 new Point(298, 199),
                 new Point(200, 199),
                 new Point(200, 291),
-            };
+            ];
 
-            a8.Points = new PointCollection
-            {
+            a8.Points =
+            [
                 new Point(210, 28),
                 new Point(115, 65),
                 new Point(0, 138),
@@ -658,7 +688,7 @@ public partial class TouchPanel : Window
                 new Point(311, 297),
                 new Point(359, 249),
                 new Point(324, 0),
-            };
+            ];
         }
     }
 
@@ -723,6 +753,11 @@ public partial class TouchPanel : Window
 
     private void HandlePointerDown(uint id, Point canvasPoint)
     {
+        if (isDebugEnabled)
+        {
+            EnsureDebugEllipse(id);
+            UpdateDebugEllipse(id, canvasPoint);
+        }
         var set = SensorsAtPoint(canvasPoint);
         foreach (var v in set) PressSensor(v);
         _pointerStates[id] = new PointerTrack(canvasPoint, set);
@@ -734,6 +769,12 @@ public partial class TouchPanel : Window
         {
             HandlePointerDown(id, canvasPoint);
             return;
+        }
+
+        if (isDebugEnabled)
+        {
+            EnsureDebugEllipse(id);
+            UpdateDebugEllipse(id, canvasPoint);
         }
 
         var from = track.Last;
@@ -759,6 +800,11 @@ public partial class TouchPanel : Window
         {
             foreach (var v in track.Current) ReleaseSensor(v);
             _pointerStates.Remove(id);
+        }
+        if (_debugEllipses.TryGetValue(id, out var el))
+        {
+            TouchCanvas.Children.Remove(el);
+            _debugEllipses.Remove(id);
         }
     }
 
@@ -805,6 +851,47 @@ public partial class TouchPanel : Window
             Add(q);
         }
         return set;
+    }
+
+    private void EnsureDebugEllipse(uint id)
+    {
+        if (_debugEllipses.ContainsKey(id)) return;
+        var el = new Ellipse
+        {
+            Stroke = Brushes.Lime,
+            StrokeThickness = 2,
+            Fill = Brushes.Transparent,
+            Opacity = 0.9,
+            IsHitTestVisible = false,
+        };
+        _debugEllipses[id] = el;
+        TouchCanvas.Children.Add(el);
+        Panel.SetZIndex(el, int.MaxValue);
+        UpdateDebugEllipseSize(el);
+    }
+
+    private void UpdateDebugEllipse(uint id, Point center)
+    {
+        if (!_debugEllipses.TryGetValue(id, out var el)) return;
+        UpdateDebugEllipseSize(el);
+        var r = _contactRadiusPx;
+        Canvas.SetLeft(el, center.X - r);
+        Canvas.SetTop(el, center.Y - r);
+    }
+
+    private void UpdateAllDebugEllipseSizes()
+    {
+        foreach (var el in _debugEllipses.Values)
+        {
+            UpdateDebugEllipseSize(el);
+        }
+    }
+
+    private void UpdateDebugEllipseSize(Ellipse el)
+    {
+        var r = _contactRadiusPx;
+        el.Width = r * 2;
+        el.Height = r * 2;
     }
 
     private void PressSensor(TouchValue v)

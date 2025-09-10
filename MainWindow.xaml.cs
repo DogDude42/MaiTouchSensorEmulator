@@ -32,6 +32,7 @@ public partial class MainWindow : Window
             IsRingButtonEmulationEnabled = Properties.Settings.Default.IsRingButtonEmulationEnabled,
             IsLargeButtonsEnabled = Properties.Settings.Default.IsLargeButtonsEnabled,
             BorderColour = Properties.Settings.Default.BorderColour,
+            ContactRadiusPx = Properties.Settings.Default.ContactRadiusPx,
             LbAppVersion = Assembly.GetEntryAssembly()?.GetName().Version?.ToString() ?? "1.0.0.0",
         };
 
