@@ -9,6 +9,7 @@ using System.Windows.Shapes;
 using WpfMaiTouchEmulator.Managers;
 using System.Linq;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 
 namespace WpfMaiTouchEmulator;
 /// <summary>
@@ -101,6 +102,12 @@ public partial class TouchPanel : Window
         Topmost = true;
         _positionManager = new TouchPanelPositionManager();
         Loaded += Window_Loaded;
+        // Keep popup overlay anchored when the panel resizes
+        SizeChanged += (_, __) => PositionResizeGripPopup();
+        // Track window movement (DragMove) so popup follows
+        LocationChanged += (_, __) => ForcePopupReposition();
+        // In case only inner border changes under Viewbox
+        this.Loaded += (_, __) => touchPanelBorder.SizeChanged += (_, __) => PositionResizeGripPopup();
         // Replaced legacy WPF Touch path with low-latency WM_POINTER handling
         // Touch.FrameReported += OnTouchFrameReported;
         try
@@ -222,12 +229,19 @@ public partial class TouchPanel : Window
                 Width = double.NaN,
                 Height = double.NaN,
             };
+            // Set lower Z-index so ResizeGrip appears on top
+            Panel.SetZIndex(host, 0);
+            
+            // Add the InputSurfaceHost to the TouchGrid - it will render behind ResizeGrip due to Z-index
             TouchGrid.Children.Add(host);
         }
         catch (Exception ex)
         {
             if (isDebugEnabled) Logger.Error("Failed to create InputSurfaceHost", ex);
         }
+
+        // Position the resize grip popup above the HwndHost (airspace-safe)
+        PositionResizeGripPopup();
     }
 
     public void PositionTouchPanel()
@@ -248,6 +262,10 @@ public partial class TouchPanel : Window
                 hasRepositioned = true;
                 onInitialReposition?.Invoke();
             }
+
+            // Ensure popup repositions after programmatic move/resize
+            PositionResizeGripPopup();
+            ForcePopupReposition();
         }
     }
 
@@ -269,6 +287,40 @@ public partial class TouchPanel : Window
     {
         ReleaseCapture();
         SendMessage(new WindowInteropHelper(this).Handle, 0x112, (IntPtr)(0xF000 + (int)edge), IntPtr.Zero);
+    }
+
+    private void PositionResizeGripPopup()
+    {
+        if (ResizeGripPopup == null || ResizeGrip == null || touchPanelBorder == null)
+            return;
+
+        // Fallback sizes if not measured yet
+        double gripW = double.IsNaN(ResizeGrip.ActualWidth) || ResizeGrip.ActualWidth == 0 ? 150 : ResizeGrip.ActualWidth;
+        double gripH = double.IsNaN(ResizeGrip.ActualHeight) || ResizeGrip.ActualHeight == 0 ? 90 : ResizeGrip.ActualHeight;
+
+        double panelW = touchPanelBorder.ActualWidth;
+        double panelH = touchPanelBorder.ActualHeight;
+
+        // Keep a small inset equal to the border thickness used in XAML (10)
+        double insetX = touchPanelBorder.BorderThickness.Left;
+        double insetY = touchPanelBorder.BorderThickness.Bottom;
+
+        // Place popup relative to the panel's top-left corner
+        double offsetX = Math.Max(0, panelW - (gripW + insetX));
+        double offsetY = Math.Max(0, panelH - (gripH + insetY));
+
+        ResizeGripPopup.HorizontalOffset = offsetX;
+        ResizeGripPopup.VerticalOffset = offsetY;
+        if (!ResizeGripPopup.IsOpen) ResizeGripPopup.IsOpen = true;
+    }
+
+    private void ForcePopupReposition()
+    {
+        if (ResizeGripPopup == null) return;
+        // Nudge offsets to force WPF to recalc popup position (transparent window quirk)
+        double ho = ResizeGripPopup.HorizontalOffset;
+        ResizeGripPopup.HorizontalOffset = ho + 0.1;
+        ResizeGripPopup.HorizontalOffset = ho;
     }
 
     // Legacy WPF Touch Frame path removed; input handled by native host

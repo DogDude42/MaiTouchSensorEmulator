@@ -301,30 +301,36 @@
                                     Tag="{x:Static local:TouchValue.C2}" />
 
 
-                                <Border
-                                    x:Name="ResizeGrip"
-                                    Canvas.Left="1290"
-                                    Canvas.Top="1350"
-                                    Width="150"
-                                    Height="90"
-                                    HorizontalAlignment="Center"
-                                    VerticalAlignment="Top"
-                                    MouseDown="ResizeGrip_MouseDown"
-                                    Style="{StaticResource ResizeGripStyle}">
-                                    <TextBlock
-                                        HorizontalAlignment="Center"
-                                        VerticalAlignment="Center"
-                                        d:Text="Resize"
-                                        FontSize="50"
-                                        Text="{Binding LbTouchPanelResize}" />
-                                </Border>
-
                             </Canvas>
                             <!--  HwndHost input surface will be added programmatically as an overlay here  -->
+
                         </Grid>
                     </Border>
                 </Viewbox>
             </DockPanel>
+
+            <!-- Overlay popup to ensure grip renders above HwndHost (airspace fix) -->
+            <Popup
+                x:Name="ResizeGripPopup"
+                AllowsTransparency="True"
+                PlacementTarget="{Binding ElementName=touchPanelBorder}"
+                Placement="Relative"
+                StaysOpen="True"
+                IsOpen="True">
+                <Border
+                    x:Name="ResizeGrip"
+                    Width="150"
+                    Height="90"
+                    MouseDown="ResizeGrip_MouseDown"
+                    Style="{StaticResource ResizeGripStyle}">
+                    <TextBlock
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        d:Text="Resize"
+                        FontSize="50"
+                        Text="{Binding LbTouchPanelResize}" />
+                </Border>
+            </Popup>
 
         </Grid>
 
