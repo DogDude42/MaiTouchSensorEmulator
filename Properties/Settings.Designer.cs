@@ -154,5 +154,17 @@ namespace WpfMaiTouchEmulator.Properties {
                 this["IsLargeButtonsEnabled"] = value;
             }
         }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("28")]
+        public int ContactRadiusPx {
+            get {
+                return ((int)(this["ContactRadiusPx"]));
+            }
+            set {
+                this["ContactRadiusPx"] = value;
+            }
+        }
     }
 }

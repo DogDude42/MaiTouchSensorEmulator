@@ -358,6 +358,24 @@ namespace WpfMaiTouchEmulator.Resources {
         }
         
         /// <summary>
+        ///   Looks up a localized string similar to Touch radius (px).
+        /// </summary>
+        internal static string lbTouchRadius {
+            get {
+                return ResourceManager.GetString("lbTouchRadius", resourceCulture);
+            }
+        }
+        
+        /// <summary>
+        ///   Looks up a localized string similar to How large the hit-scan radius around the touch point should be.
+        /// </summary>
+        internal static string lbTouchRadiusTT {
+            get {
+                return ResourceManager.GetString("lbTouchRadiusTT", resourceCulture);
+            }
+        }
+        
+        /// <summary>
         ///   Looks up a localized string similar to Uninstall com port.
         /// </summary>
         internal static string lbUninstallComPort {

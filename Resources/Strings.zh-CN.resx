@@ -216,6 +216,13 @@
   <data name="LbTouchPanelResize" xml:space="preserve">
     <value>调整大小</value>
   </data>
+  <data name="lbTouchRadius" xml:space="preserve">
+    <value>触摸半径（像素）</value>
+  </data>
+  <data name="lbTouchRadiusTT" xml:space="preserve">
+    <value>触点周围的判定半径大小
+</value>
+  </data>
   <data name="lbUninstallComPort" xml:space="preserve">
     <value>卸载COM端口</value>
   </data>

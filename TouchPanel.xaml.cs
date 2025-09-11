@@ -7,6 +7,9 @@ using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
 using WpfMaiTouchEmulator.Managers;
+using System.Linq;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 
 namespace WpfMaiTouchEmulator;
 /// <summary>
@@ -18,12 +21,20 @@ public partial class TouchPanel : Window
     internal Action<TouchValue>? onRelease;
     internal Action? onInitialReposition;
 
-    private readonly Dictionary<int, (Polygon polygon, Point lastPoint)> activeTouches = new();
+    private readonly Dictionary<int, (Polygon polygon, Point lastPoint)> activeTouches = [];
     private readonly TouchPanelPositionManager _positionManager;
     private List<Polygon> buttons = [];
     private bool isDebugEnabled = Properties.Settings.Default.IsDebugEnabled;
     private bool isRingButtonEmulationEnabled = Properties.Settings.Default.IsRingButtonEmulationEnabled;
     private bool hasRepositioned = false;
+
+    // Low-latency pointer path state and precomputed geometry
+    private readonly Dictionary<uint, PointerTrack> _pointerStates = [];
+    private readonly Dictionary<TouchValue, int> _sensorHoldCounts = [];
+    private readonly Dictionary<TouchValue, Polygon> _polygonByValue = [];
+    private double _contactRadiusPx; // canvas pixels (overridden by settings)
+    private readonly int _circleSampleCount = 16;     // points on contact circle
+    private readonly Dictionary<uint, Ellipse> _debugEllipses = [];
 
     private enum ResizeDirection
     {
@@ -37,6 +48,8 @@ public partial class TouchPanel : Window
     [DllImport("user32.dll", CharSet = CharSet.Auto)]
     private static extern int SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
 
+    // Input is handled exclusively in InputSurfaceHost
+
 
     [StructLayout(LayoutKind.Sequential)]
     public struct RECT
@@ -46,6 +59,26 @@ public partial class TouchPanel : Window
         public int Right;
         public int Bottom;
     }
+
+    // Internal action constants for host → panel routing
+    private const int ACT_DOWN = 1;
+    private const int ACT_MOVE = 2;
+    private const int ACT_UP = 3;
+
+    // (No WM_POINTER structures here)
+
+    private sealed class PointerTrack
+    {
+        public Point Last { get; }
+        public HashSet<TouchValue> Current { get; }
+        public PointerTrack(Point last, HashSet<TouchValue> current)
+        {
+            Last = last;
+            Current = current;
+        }
+    }
+
+    // (No WM_TOUCH interop here)
 
     public enum SizingEdge
     {
@@ -69,14 +102,38 @@ public partial class TouchPanel : Window
         Topmost = true;
         _positionManager = new TouchPanelPositionManager();
         Loaded += Window_Loaded;
-        Touch.FrameReported += OnTouchFrameReported;
+        // Keep popup overlay anchored when the panel resizes
+        SizeChanged += (_, __) => PositionResizeGripPopup();
+        // Track window movement (DragMove) so popup follows
+        LocationChanged += (_, __) => ForcePopupReposition();
+        // In case only inner border changes under Viewbox
+        this.Loaded += (_, __) => touchPanelBorder.SizeChanged += (_, __) => PositionResizeGripPopup();
+        // Replaced legacy WPF Touch path with low-latency WM_POINTER handling
+        // Touch.FrameReported += OnTouchFrameReported;
+        try
+        {
+            _contactRadiusPx = Math.Max(10, Properties.Settings.Default.ContactRadiusPx);
+            Properties.Settings.Default.PropertyChanged += (s, e) =>
+            {
+                if (e.PropertyName == nameof(Properties.Settings.Default.ContactRadiusPx))
+                {
+                    _contactRadiusPx = Math.Max(10, Properties.Settings.Default.ContactRadiusPx);
+                    Application.Current.Dispatcher.Invoke(UpdateAllDebugEllipseSizes);
+                }
+            };
+        }
+        catch { }
     }
 
 
     protected override void OnSourceInitialized(EventArgs e)
     {
         base.OnSourceInitialized(e);
-        var source = HwndSource.FromHwnd(new WindowInteropHelper(this).Handle);
+        // Disable WPF Stylus/Touch pipeline to avoid latency
+        try { System.AppContext.SetSwitch("Switch.System.Windows.Input.Stylus.DisableStylusAndTouchSupport", true); } catch { }
+
+        var hwnd = new WindowInteropHelper(this).Handle;
+        var source = HwndSource.FromHwnd(hwnd);
         source.AddHook(WndProc);
     }
 
@@ -91,7 +148,30 @@ public partial class TouchPanel : Window
             Marshal.StructureToPtr(rect, lParam, true);
             handled = true;
         }
+        else if (msg == 0x0084 /* WM_NCHITTEST */)
+        {
+            // Force the entire window surface to be interactive for hit-testing.
+            // This helps ensure touch targets this window rather than passing through.
+            handled = true;
+            return new IntPtr(1 /* HTCLIENT */);
+        }
         return IntPtr.Zero;
+    }
+
+    // Entry points for the native child host
+    internal void HostPointerDown(uint id, double screenX, double screenY) => ProcessScreenPointer(id, ACT_DOWN, new Point(screenX, screenY));
+    internal void HostPointerMove(uint id, double screenX, double screenY) => ProcessScreenPointer(id, ACT_MOVE, new Point(screenX, screenY));
+    internal void HostPointerUp(uint id, double screenX, double screenY) => ProcessScreenPointer(id, ACT_UP, new Point(screenX, screenY));
+
+    private void ProcessScreenPointer(uint id, int action, Point screenPoint)
+    {
+        var canvasPoint = TouchCanvas.PointFromScreen(screenPoint);
+        if (action == ACT_DOWN)
+            HandlePointerDown(id, canvasPoint);
+        else if (action == ACT_MOVE)
+            HandlePointerUpdate(id, canvasPoint);
+        else if (action == ACT_UP)
+            HandlePointerUp(id, canvasPoint);
     }
 
     private void EnforceAspectRatio(ref RECT rect, SizingEdge edge)
@@ -130,7 +210,38 @@ public partial class TouchPanel : Window
     private void Window_Loaded(object sender, RoutedEventArgs e)
     {
         buttons = VisualTreeHelperExtensions.FindVisualChildren<Polygon>(this);
+        _polygonByValue.Clear();
+        foreach (var p in buttons)
+        {
+            if (p.Tag is TouchValue tv)
+            {
+                _polygonByValue[tv] = p;
+            }
+        }
         DeselectAllItems();
+
+        try
+        {
+            var host = new InputSurfaceHost(this)
+            {
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                VerticalAlignment = VerticalAlignment.Stretch,
+                Width = double.NaN,
+                Height = double.NaN,
+            };
+            // Set lower Z-index so ResizeGrip appears on top
+            Panel.SetZIndex(host, 0);
+            
+            // Add the InputSurfaceHost to the TouchGrid - it will render behind ResizeGrip due to Z-index
+            TouchGrid.Children.Add(host);
+        }
+        catch (Exception ex)
+        {
+            if (isDebugEnabled) Logger.Error("Failed to create InputSurfaceHost", ex);
+        }
+
+        // Position the resize grip popup above the HwndHost (airspace-safe)
+        PositionResizeGripPopup();
     }
 
     public void PositionTouchPanel()
@@ -151,6 +262,10 @@ public partial class TouchPanel : Window
                 hasRepositioned = true;
                 onInitialReposition?.Invoke();
             }
+
+            // Ensure popup repositions after programmatic move/resize
+            PositionResizeGripPopup();
+            ForcePopupReposition();
         }
     }
 
@@ -174,102 +289,41 @@ public partial class TouchPanel : Window
         SendMessage(new WindowInteropHelper(this).Handle, 0x112, (IntPtr)(0xF000 + (int)edge), IntPtr.Zero);
     }
 
-    private void OnTouchFrameReported(object sender, TouchFrameEventArgs e)
+    private void PositionResizeGripPopup()
     {
-        var currentTouchPoints = e.GetTouchPoints(this);
-        var currentIds = new HashSet<int>();
+        if (ResizeGripPopup == null || ResizeGrip == null || touchPanelBorder == null)
+            return;
 
-        foreach (var touch in currentTouchPoints)
-        {
-            var id = touch.TouchDevice.Id;
+        // Fallback sizes if not measured yet
+        double gripW = double.IsNaN(ResizeGrip.ActualWidth) || ResizeGrip.ActualWidth == 0 ? 150 : ResizeGrip.ActualWidth;
+        double gripH = double.IsNaN(ResizeGrip.ActualHeight) || ResizeGrip.ActualHeight == 0 ? 90 : ResizeGrip.ActualHeight;
 
-            // If the touch is released, process it as a TouchUp.
-            if (touch.Action == TouchAction.Up)
-            {
-                if (activeTouches.TryGetValue(id, out var touchInfo2))
-                {
-                    if (activeTouches.Values.Count(v => v.polygon == touchInfo2.polygon) == 1)
-                    {
-                        HighlightElement(touchInfo2.polygon, false);
-                        onRelease?.Invoke((TouchValue)touchInfo2.polygon.Tag);
-                        if (isRingButtonEmulationEnabled)
-                        {
-                            RingButtonEmulator.ReleaseButton((TouchValue)touchInfo2.polygon.Tag);
-                        }
-                    }
-                    activeTouches.Remove(id);
-                }
-                continue;
-            }
+        double panelW = touchPanelBorder.ActualWidth;
+        double panelH = touchPanelBorder.ActualHeight;
 
-            currentIds.Add(id);
+        // Keep a small inset equal to the border thickness used in XAML (10)
+        double insetX = touchPanelBorder.BorderThickness.Left;
+        double insetY = touchPanelBorder.BorderThickness.Bottom;
 
-            // New touch (TouchDown)
-            if (!activeTouches.TryGetValue(id, out var touchInfo))
-            {
-                if (VisualTreeHelper.HitTest(this, touch.Position)?.VisualHit is Polygon polygon)
-                {
-                    HighlightElement(polygon, true);
-                    activeTouches[id] = (polygon, touch.Position);
-                    onTouch?.Invoke((TouchValue)polygon.Tag);
-                    if (isRingButtonEmulationEnabled && RingButtonEmulator.HasRingButtonMapping((TouchValue)polygon.Tag))
-                    {
-                        RingButtonEmulator.PressButton((TouchValue)polygon.Tag);
-                    }
-                }
-            }
-            // Existing touch (TouchMove)
-            else
-            {
-                var previousPosition = touchInfo.lastPoint;
-                var currentPosition = touch.Position;
-                var sampleCount = 10;
-                var changed = false;
+        // Place popup relative to the panel's top-left corner
+        double offsetX = Math.Max(0, panelW - (gripW + insetX));
+        double offsetY = Math.Max(0, panelH - (gripH + insetY));
 
-                for (var i = 1; i <= sampleCount; i++)
-                {
-                    var t = (double)i / sampleCount;
-                    var samplePoint = new Point(
-                        previousPosition.X + (currentPosition.X - previousPosition.X) * t,
-                        previousPosition.Y + (currentPosition.Y - previousPosition.Y) * t);
-                    if (VisualTreeHelper.HitTest(this, samplePoint)?.VisualHit is Polygon polygon && polygon != touchInfo.polygon)
-                    {
-                        if (activeTouches.Values.Count(v => v.polygon == touchInfo.polygon) == 1)
-                        {
-                            HighlightElement(touchInfo.polygon, false);
-                            onRelease?.Invoke((TouchValue)touchInfo.polygon.Tag);
-                        }
-                        HighlightElement(polygon, true);
-                        onTouch?.Invoke((TouchValue)polygon.Tag);
-                        activeTouches[id] = (polygon, samplePoint);
-                        changed = true;
-                        break;
-                    }
-                }
-                if (!changed)
-                {
-                    activeTouches[id] = (touchInfo.polygon, currentPosition);
-                }
-            }
-        }
-
-        // Process any touches that might not be reported this frame.
-        var endedTouches = activeTouches.Keys.Except(currentIds).ToList();
-        foreach (var id in endedTouches)
-        {
-            var touchInfo = activeTouches[id];
-            if (activeTouches.Values.Count(v => v.polygon == touchInfo.polygon) == 1)
-            {
-                HighlightElement(touchInfo.polygon, false);
-                onRelease?.Invoke((TouchValue)touchInfo.polygon.Tag);
-                if (isRingButtonEmulationEnabled)
-                {
-                    RingButtonEmulator.ReleaseButton((TouchValue)touchInfo.polygon.Tag);
-                }
-            }
-            activeTouches.Remove(id);
-        }
+        ResizeGripPopup.HorizontalOffset = offsetX;
+        ResizeGripPopup.VerticalOffset = offsetY;
+        if (!ResizeGripPopup.IsOpen) ResizeGripPopup.IsOpen = true;
     }
+
+    private void ForcePopupReposition()
+    {
+        if (ResizeGripPopup == null) return;
+        // Nudge offsets to force WPF to recalc popup position (transparent window quirk)
+        double ho = ResizeGripPopup.HorizontalOffset;
+        ResizeGripPopup.HorizontalOffset = ho + 0.1;
+        ResizeGripPopup.HorizontalOffset = ho;
+    }
+
+    // Legacy WPF Touch Frame path removed; input handled by native host
 
     private void DeselectAllItems()
     {
@@ -290,6 +344,22 @@ public partial class TouchPanel : Window
         {
             button.Opacity = enabled ? 0.3 : 0;
         });
+        if (!enabled)
+        {
+            foreach (var kv in _debugEllipses.ToList())
+            {
+                TouchCanvas.Children.Remove(kv.Value);
+                _debugEllipses.Remove(kv.Key);
+            }
+        }
+        else
+        {
+            foreach (var kv in _pointerStates)
+            {
+                EnsureDebugEllipse(kv.Key);
+                UpdateDebugEllipse(kv.Key, kv.Value.Last);
+            }
+        }
     }
 
     public void SetLargeButtonMode(bool enabled)
@@ -332,156 +402,156 @@ public partial class TouchPanel : Window
 
         if (enabled)
         {
-            d1.Points = new PointCollection
-            {
+            d1.Points =
+            [
                 new Point(-5, -50),
                 new Point(205, -50),
                 new Point(165, 253),
                 new Point(100, 188),
                 new Point(35, 253),
-            };
+            ];
 
-            a1.Points = new PointCollection
-            {
+            a1.Points =
+            [
                 new Point(495, -50),
                 new Point(208, 338),
                 new Point(145, 338),
                 new Point(49, 297),
                 new Point(0, 249),
                 new Point(42, -55),
-            };
-            d2.Points = new PointCollection
-            {
+            ];
+            d2.Points =
+            [
                 new Point(290, -182),
                 new Point(500, -180),
                 new Point(500, -5),
                 new Point(96, 297),
                 new Point(96, 205),
                 new Point(0, 205),
-            };
-            a2.Points = new PointCollection
-            {
+            ];
+            a2.Points =
+            [
                 new Point(405, 317),
                 new Point(91, 362),
                 new Point(42, 314),
                 new Point(0, 219),
                 new Point(0, 150),
                 new Point(405, -150),
-            };
-            d3.Points = new PointCollection
-            {
+            ];
+            d3.Points =
+            [
                 new Point(315, -10),
                 new Point(315, 208),
                 new Point(0, 165),
                 new Point(65, 100),
                 new Point(0, 35),
-            };
-            a3.Points = new PointCollection
-            {
+            ];
+            a3.Points =
+            [
                 new Point(406, 520),
                 new Point(0, 213),
                 new Point(0, 144),
                 new Point(41, 48),
                 new Point(89, 0),
                 new Point(406, 43),
-            };
-            d4.Points = new PointCollection
-            {
+            ];
+            d4.Points =
+            [
                 new Point(500, 309),
                 new Point(500, 491),
                 new Point(305, 491),
                 new Point(0, 92),
                 new Point(92, 92),
                 new Point(92, 0),
-            };
-            a4.Points = new PointCollection
-            {
+            ];
+            a4.Points =
+            [
                 new Point(45, 400),
                 new Point(0, 83),
                 new Point(48, 35),
                 new Point(144, 0),
                 new Point(212, 0),
                 new Point(515, 400),
-            };
-            d5.Points = new PointCollection
-            {
+            ];
+            d5.Points =
+            [
                 new Point(208, 317),
                 new Point(-10, 317),
                 new Point(34, 0),
                 new Point(99, 65),
                 new Point(164, 0),
-            };
+            ];
 
-            a5.Points = new PointCollection
-            {
+            a5.Points =
+            [
                 new Point(317, 400),
                 new Point(363, 83),
                 new Point(316, 35),
                 new Point(220, 0),
                 new Point(152, 0),
                 new Point(-150, 400),
-            };
-            d6.Points = new PointCollection
-            {
+            ];
+            d6.Points =
+            [
                 new Point(-10, 492),
                 new Point(-200, 492),
                 new Point(-200, 295),
                 new Point(199, 0),
                 new Point(199, 92),
                 new Point(291, 92),
-            };
-            a6.Points = new PointCollection
-            {
+            ];
+            a6.Points =
+            [
                 new Point(-67, 505),
                 new Point(333, 214),
                 new Point(333, 144),
                 new Point(296, 48),
                 new Point(248, 0),
                 new Point(-67, 45),
-            };
+            ];
 
-            d7.Points = new PointCollection
-            {
+            d7.Points =
+            [
                 new Point(-60, 207),
                 new Point(-60, -7),
                 new Point(253, 34),
                 new Point(188, 99),
                 new Point(253, 164),
-            };
+            ];
 
-            a7.Points = new PointCollection
-            {
+            a7.Points =
+            [
                 new Point(-65, 320),
                 new Point(248, 362),
                 new Point(297, 314),
                 new Point(333, 219),
                 new Point(333, 151),
                 new Point(-65, -150),
-            };
-            d8.Points = new PointCollection
-            {
+            ];
+            d8.Points =
+            [
                 new Point(-195, -10),
                 new Point(-195, -195),
                 new Point(-5, -195),
                 new Point(298, 199),
                 new Point(200, 199),
                 new Point(200, 291),
-            };
+            ];
 
-            a8.Points = new PointCollection
-            {
+            a8.Points =
+            [
                 new Point(-148, -55),
                 new Point(153, 338),
                 new Point(215, 338),
                 new Point(311, 297),
                 new Point(359, 249),
                 new Point(318, -55),
-            };
+            ];
         }
         else
         {
-            d1.Points = new PointCollection
-            {
+            d1.Points =
+            [
                 new Point(0, 5),
                 new Point(50, 2),
                 new Point(100, 0),
@@ -490,10 +560,10 @@ public partial class TouchPanel : Window
                 new Point(165, 253),
                 new Point(100, 188),
                 new Point(35, 253),
-            };
+            ];
 
-            a1.Points = new PointCollection
-            {
+            a1.Points =
+            [
                 new Point(150, 28),
                 new Point(245, 65),
                 new Point(360, 133),
@@ -502,10 +572,10 @@ public partial class TouchPanel : Window
                 new Point(49, 297),
                 new Point(0, 249),
                 new Point(35, 0),
-            };
+            ];
 
-            d2.Points = new PointCollection
-            {
+            d2.Points =
+            [
                 new Point(153, 0),
                 new Point(187, 32),
                 new Point(225, 67),
@@ -514,10 +584,10 @@ public partial class TouchPanel : Window
                 new Point(96, 297),
                 new Point(96, 205),
                 new Point(0, 205),
-            };
+            ];
 
-            a2.Points = new PointCollection
-            {
+            a2.Points =
+            [
                 new Point(261, 101),
                 new Point(303, 195),
                 new Point(339, 327),
@@ -526,10 +596,10 @@ public partial class TouchPanel : Window
                 new Point(0, 219),
                 new Point(0, 150),
                 new Point(202, 0),
-            };
+            ];
 
-            d3.Points = new PointCollection
-            {
+            d3.Points =
+            [
                 new Point(248, 0),
                 new Point(251, 48),
                 new Point(253, 100),
@@ -538,10 +608,10 @@ public partial class TouchPanel : Window
                 new Point(0, 165),
                 new Point(65, 100),
                 new Point(0, 35),
-            };
+            ];
 
-            a3.Points = new PointCollection
-            {
+            a3.Points =
+            [
                 new Point(305, 150),
                 new Point(269, 246),
                 new Point(201, 364),
@@ -550,10 +620,10 @@ public partial class TouchPanel : Window
                 new Point(41, 48),
                 new Point(89, 0),
                 new Point(337, 34),
-            };
+            ];
 
-            d4.Points = new PointCollection
-            {
+            d4.Points =
+            [
                 new Point(292, 151),
                 new Point(260, 187),
                 new Point(225, 225),
@@ -562,10 +632,10 @@ public partial class TouchPanel : Window
                 new Point(0, 92),
                 new Point(92, 92),
                 new Point(92, 0),
-            };
+            ];
 
-            a4.Points = new PointCollection
-            {
+            a4.Points =
+            [
                 new Point(260, 259),
                 new Point(167, 301),
                 new Point(37, 335),
@@ -574,10 +644,10 @@ public partial class TouchPanel : Window
                 new Point(144, 0),
                 new Point(212, 0),
                 new Point(364, 200),
-            };
+            ];
 
-            d5.Points = new PointCollection
-            {
+            d5.Points =
+            [
                 new Point(199, 252),
                 new Point(151, 255),
                 new Point(99, 257),
@@ -586,10 +656,10 @@ public partial class TouchPanel : Window
                 new Point(34, 0),
                 new Point(99, 65),
                 new Point(164, 0),
-            };
+            ];
 
-            a5.Points = new PointCollection
-            {
+            a5.Points =
+            [
                 new Point(104, 259),
                 new Point(197, 301),
                 new Point(327, 335),
@@ -598,10 +668,10 @@ public partial class TouchPanel : Window
                 new Point(220, 0),
                 new Point(152, 0),
                 new Point(0, 201),
-            };
+            ];
 
-            d6.Points = new PointCollection
-            {
+            d6.Points =
+            [
                 new Point(140, 292),
                 new Point(104, 260),
                 new Point(66, 225),
@@ -610,10 +680,10 @@ public partial class TouchPanel : Window
                 new Point(199, 0),
                 new Point(199, 92),
                 new Point(291, 92),
-            };
+            ];
 
-            a6.Points = new PointCollection
-            {
+            a6.Points =
+            [
                 new Point(32, 150),
                 new Point(68, 246),
                 new Point(133, 365),
@@ -622,10 +692,10 @@ public partial class TouchPanel : Window
                 new Point(296, 48),
                 new Point(248, 0),
                 new Point(0, 35),
-            };
+            ];
 
-            d7.Points = new PointCollection
-            {
+            d7.Points =
+            [
                 new Point(5, 199),
                 new Point(2, 151),
                 new Point(0, 99),
@@ -634,10 +704,10 @@ public partial class TouchPanel : Window
                 new Point(253, 34),
                 new Point(188, 99),
                 new Point(253, 164),
-            };
+            ];
 
-            a7.Points = new PointCollection
-            {
+            a7.Points =
+            [
                 new Point(78, 101),
                 new Point(36, 195),
                 new Point(0, 327),
@@ -646,10 +716,10 @@ public partial class TouchPanel : Window
                 new Point(333, 219),
                 new Point(333, 151),
                 new Point(132, 0),
-            };
+            ];
 
-            d8.Points = new PointCollection
-            {
+            d8.Points =
+            [
                 new Point(0, 140),
                 new Point(32, 104),
                 new Point(67, 66),
@@ -658,10 +728,10 @@ public partial class TouchPanel : Window
                 new Point(298, 199),
                 new Point(200, 199),
                 new Point(200, 291),
-            };
+            ];
 
-            a8.Points = new PointCollection
-            {
+            a8.Points =
+            [
                 new Point(210, 28),
                 new Point(115, 65),
                 new Point(0, 138),
@@ -670,7 +740,7 @@ public partial class TouchPanel : Window
                 new Point(311, 297),
                 new Point(359, 249),
                 new Point(324, 0),
-            };
+            ];
         }
     }
 
@@ -729,5 +799,226 @@ public partial class TouchPanel : Window
                 element.Opacity = highlight ? 0.8 : 0.3;
             });
         }
+    }
+
+    // --- Low-latency pointer processing + polar mapping ---
+
+    private void HandlePointerDown(uint id, Point canvasPoint)
+    {
+        if (isDebugEnabled)
+        {
+            EnsureDebugEllipse(id);
+            UpdateDebugEllipse(id, canvasPoint);
+        }
+        var set = SensorsAtPoint(canvasPoint);
+        foreach (var v in set) PressSensor(v);
+        _pointerStates[id] = new PointerTrack(canvasPoint, set);
+    }
+
+    private void HandlePointerUpdate(uint id, Point canvasPoint)
+    {
+        if (!_pointerStates.TryGetValue(id, out var track))
+        {
+            HandlePointerDown(id, canvasPoint);
+            return;
+        }
+
+        if (isDebugEnabled)
+        {
+            EnsureDebugEllipse(id);
+            UpdateDebugEllipse(id, canvasPoint);
+        }
+
+        var from = track.Last;
+        var to = canvasPoint;
+        var nextSet = SensorsAlongPath(from, to);
+
+        // Diff sets
+        foreach (var v in nextSet)
+        {
+            if (!track.Current.Contains(v)) PressSensor(v);
+        }
+        foreach (var v in track.Current)
+        {
+            if (!nextSet.Contains(v)) ReleaseSensor(v);
+        }
+
+        _pointerStates[id] = new PointerTrack(canvasPoint, nextSet);
+    }
+
+    private void HandlePointerUp(uint id, Point canvasPoint)
+    {
+        if (_pointerStates.TryGetValue(id, out var track))
+        {
+            foreach (var v in track.Current) ReleaseSensor(v);
+            _pointerStates.Remove(id);
+        }
+        if (_debugEllipses.TryGetValue(id, out var el))
+        {
+            TouchCanvas.Children.Remove(el);
+            _debugEllipses.Remove(id);
+        }
+    }
+
+    private HashSet<TouchValue> SensorsAlongPath(Point from, Point to)
+    {
+        var dx = to.X - from.X;
+        var dy = to.Y - from.Y;
+        var dist = Math.Sqrt(dx * dx + dy * dy);
+        var steps = Math.Max(1, (int)(dist / 3));
+        var result = new HashSet<TouchValue>();
+        for (int i = 0; i <= steps; i++)
+        {
+            var t = steps == 0 ? 1.0 : (double)i / steps;
+            var p = new Point(from.X + dx * t, from.Y + dy * t);
+            var set = SensorsAtPoint(p);
+            result.UnionWith(set);
+        }
+        return result;
+    }
+
+    private HashSet<TouchValue> SensorsAtPoint(Point p)
+    {
+        var set = new HashSet<TouchValue>();
+        void Add(Point q)
+        {
+            var mv = MapPointToTouchValue(q);
+            if (mv.HasValue) set.Add(mv.Value);
+        }
+        Add(p);
+        var r = _contactRadiusPx;
+        int n = Math.Max(8, _circleSampleCount);
+        for (int i = 0; i < n; i++)
+        {
+            var ang = (i * 2.0 * Math.PI) / n;
+            var q = new Point(p.X + r * Math.Cos(ang), p.Y + r * Math.Sin(ang));
+            Add(q);
+        }
+        // inner ring to catch narrow gaps
+        var ri = r * 0.5;
+        for (int i = 0; i < n; i++)
+        {
+            var ang = (i * 2.0 * Math.PI) / n;
+            var q = new Point(p.X + ri * Math.Cos(ang), p.Y + ri * Math.Sin(ang));
+            Add(q);
+        }
+        return set;
+    }
+
+    private void EnsureDebugEllipse(uint id)
+    {
+        if (_debugEllipses.ContainsKey(id)) return;
+        var el = new Ellipse
+        {
+            Stroke = Brushes.Lime,
+            StrokeThickness = 2,
+            Fill = Brushes.Transparent,
+            Opacity = 0.9,
+            IsHitTestVisible = false,
+        };
+        _debugEllipses[id] = el;
+        TouchCanvas.Children.Add(el);
+        Panel.SetZIndex(el, int.MaxValue);
+        UpdateDebugEllipseSize(el);
+    }
+
+    private void UpdateDebugEllipse(uint id, Point center)
+    {
+        if (!_debugEllipses.TryGetValue(id, out var el)) return;
+        UpdateDebugEllipseSize(el);
+        var r = _contactRadiusPx;
+        Canvas.SetLeft(el, center.X - r);
+        Canvas.SetTop(el, center.Y - r);
+    }
+
+    private void UpdateAllDebugEllipseSizes()
+    {
+        foreach (var el in _debugEllipses.Values)
+        {
+            UpdateDebugEllipseSize(el);
+        }
+    }
+
+    private void UpdateDebugEllipseSize(Ellipse el)
+    {
+        var r = _contactRadiusPx;
+        el.Width = r * 2;
+        el.Height = r * 2;
+    }
+
+    private void PressSensor(TouchValue v)
+    {
+        if (!_sensorHoldCounts.TryGetValue(v, out var c)) c = 0;
+        _sensorHoldCounts[v] = c + 1;
+        if (c == 0)
+        {
+            onTouch?.Invoke(v);
+            if (isRingButtonEmulationEnabled && RingButtonEmulator.HasRingButtonMapping(v))
+            {
+                RingButtonEmulator.PressButton(v);
+            }
+            if (_polygonByValue.TryGetValue(v, out var poly)) HighlightElement(poly, true);
+        }
+    }
+
+    private void ReleaseSensor(TouchValue v)
+    {
+        if (!_sensorHoldCounts.TryGetValue(v, out var c)) return;
+        c--;
+        if (c <= 0)
+        {
+            _sensorHoldCounts.Remove(v);
+            onRelease?.Invoke(v);
+            if (isRingButtonEmulationEnabled)
+            {
+                RingButtonEmulator.ReleaseButton(v);
+            }
+            if (_polygonByValue.TryGetValue(v, out var poly)) HighlightElement(poly, false);
+        }
+        else
+        {
+            _sensorHoldCounts[v] = c;
+        }
+    }
+
+    private TouchValue? MapPointToTouchValue(Point canvasPoint)
+    {
+        // Test against all polygons using a fast point-in-polygon
+        foreach (var kv in _polygonByValue)
+        {
+            if (PointInPolygon(canvasPoint, kv.Value))
+            {
+                return kv.Key;
+            }
+        }
+        return null;
+    }
+
+    private static bool PointInPolygon(Point p, Polygon poly)
+    {
+        // Ray-casting algorithm in Canvas coordinates (accounts for Canvas.Left/Top)
+        double left = Canvas.GetLeft(poly); if (double.IsNaN(left)) left = 0;
+        double top = Canvas.GetTop(poly); if (double.IsNaN(top)) top = 0;
+        var pts = poly.Points;
+        int count = pts.Count;
+        if (count < 3) return false;
+        bool inside = false;
+        double x = p.X, y = p.Y;
+        double x0 = left + pts[count - 1].X;
+        double y0 = top + pts[count - 1].Y;
+        for (int i = 0; i < count; i++)
+        {
+            double x1 = left + pts[i].X;
+            double y1 = top + pts[i].Y;
+            // Check if edge (x0,y0)-(x1,y1) straddles the scanline at y
+            bool cond = ((y1 > y) != (y0 > y));
+            if (cond)
+            {
+                double xInt = x1 + (y - y1) * (x0 - x1) / (y0 - y1);
+                if (xInt > x) inside = !inside;
+            }
+            x0 = x1; y0 = y1;
+        }
+        return inside;
     }
 }

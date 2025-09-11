@@ -216,6 +216,13 @@
   <data name="LbTouchPanelResize" xml:space="preserve">
     <value>サイズ変更</value>
   </data>
+  <data name="lbTouchRadius" xml:space="preserve">
+    <value>タッチ半径（px）</value>
+  </data>
+  <data name="lbTouchRadiusTT" xml:space="preserve">
+    <value>タッチ点の周囲で判定される半径の大きさ
+</value>
+  </data>
   <data name="lbUninstallComPort" xml:space="preserve">
     <value>COMポートをアンインストール</value>
   </data>

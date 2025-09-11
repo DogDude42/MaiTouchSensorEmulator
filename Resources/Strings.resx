@@ -216,6 +216,12 @@
   <data name="LbTouchPanelResize" xml:space="preserve">
     <value>Resize</value>
   </data>
+  <data name="lbTouchRadius" xml:space="preserve">
+    <value>Touch radius (px)</value>
+  </data>
+  <data name="lbTouchRadiusTT" xml:space="preserve">
+    <value>How large the hit-scan radius around the touch point should be</value>
+  </data>
   <data name="lbUninstallComPort" xml:space="preserve">
     <value>Uninstall com port</value>
   </data>
