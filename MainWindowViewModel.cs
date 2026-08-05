@@ -340,18 +340,18 @@ public class MainWindowViewModel : INotifyPropertyChanged
     }
 
     public int ContactRadiusPx
-    {
-        get => _contactRadiusPx;
-        set
         {
-            var clamped = Math.Max(10, value);
-            if (_contactRadiusPx == clamped) return;
-            _contactRadiusPx = clamped;
-            Properties.Settings.Default.ContactRadiusPx = _contactRadiusPx;
-            Properties.Settings.Default.Save();
-            OnPropertyChanged();
+            get => _contactRadiusPx;
+            set
+            {
+                var clamped = Math.Max(0, value);
+                if (_contactRadiusPx == clamped) return;
+                _contactRadiusPx = clamped;
+                Properties.Settings.Default.ContactRadiusPx = _contactRadiusPx;
+                Properties.Settings.Default.Save();
+                OnPropertyChanged();
+            }
         }
-    }
 
     public string BorderColour
     {
