@@ -61,17 +61,10 @@ internal sealed class InputSurfaceHost : HwndHost
         }
         else
         {
-            // Register for touch on child; should succeed
-            const uint TWF_FINETOUCH = 0x00000001;
-            const uint TWF_WANTPALM = 0x00000002;
-            if (!RegisterTouchWindow(_hwnd, TWF_FINETOUCH | TWF_WANTPALM))
-            {
-                Logger.Warn($"RegisterTouchWindow(child) failed err={Marshal.GetLastWin32Error()}");
-            }
-            else
-            {
-                Logger.Info("InputSurfaceHost child window created and registered for touch");
-            }
+            // WM_POINTER fires by default on Win8+; no registration needed.
+            // Do NOT call RegisterTouchWindow — it enables WM_TOUCH which duplicates
+            // contacts with different IDs than WM_POINTER, causing desync/phantom touches.
+            Logger.Info("InputSurfaceHost child window created (WM_POINTER only)");
         }
 
         return new HandleRef(this, _hwnd);
@@ -89,44 +82,37 @@ internal sealed class InputSurfaceHost : HwndHost
     {
         const int WM_NCHITTEST = 0x0084;
         const int HTCLIENT = 1;
-        const int WM_TOUCH = 0x0240;
         const int WM_POINTERUPDATE = 0x0245;
         const int WM_POINTERDOWN = 0x0246;
         const int WM_POINTERUP = 0x0247;
+        // WM_TABLET_QUERYSYSTEMGESTURESTATUS = 0x02CC - disable system gestures (tap, hold, flick, etc.)
+        const int WM_TABLET_QUERYSYSTEMGESTURESTATUS = 0x02CC;
+        // Tablet gesture disable flags (per tpcshrd.h)
+        const uint TABLET_DISABLE_PRESSANDHOLD = 0x00000001;
+        const uint TABLET_DISABLE_PENTAPFEEDBACK = 0x00000008;
+        const uint TABLET_DISABLE_PENBARRELFEEDBACK = 0x00000010;
+        const uint TABLET_DISABLE_TOUCHSWITCH = 0x00008000; // disables edge swipe (virtual desktop switch)
+        // NOTE: Do NOT set TOUCHUIFORCEON (0x100) or TOUCHUIFORCEOFF (0x200) - breaks touch input
+        const uint TABLET_DISABLE_FLICKS = 0x00010000;
+        const uint TABLET_DISABLE_SMOOTHSCROLLING = 0x00080000;
+        // Only disable gestures that interfere with gameplay - keep touch input functional
+        const uint TABLET_DISABLE_GAME_GESTURES = TABLET_DISABLE_PRESSANDHOLD | 
+                                                   TABLET_DISABLE_PENTAPFEEDBACK | 
+                                                   TABLET_DISABLE_PENBARRELFEEDBACK | 
+                                                   TABLET_DISABLE_TOUCHSWITCH | 
+                                                   TABLET_DISABLE_FLICKS | 
+                                                   TABLET_DISABLE_SMOOTHSCROLLING;
 
         if (msg == WM_NCHITTEST)
         {
             handled = true;
             return new IntPtr(HTCLIENT);
         }
-        else if (msg == WM_TOUCH)
+        else if (msg == WM_TABLET_QUERYSYSTEMGESTURESTATUS)
         {
-            int inputCount = (int)(wParam.ToInt64() & 0xFFFF);
-            var inputs = new TOUCHINPUT[inputCount];
-            if (GetTouchInputInfo(lParam, inputCount, inputs, Marshal.SizeOf(typeof(TOUCHINPUT))))
-            {
-                for (int i = 0; i < inputCount; i++)
-                {
-                    var ti = inputs[i];
-                    double sx = ti.x / 100.0;
-                    double sy = ti.y / 100.0;
-                    uint id = ti.dwID;
-                    if ((ti.dwFlags & TOUCHEVENTF_DOWN) != 0)
-                    {
-                        Logger.Info($"[Host] WM_TOUCH DOWN id={id} at=({sx:F1},{sy:F1})");
-                        _owner.HostPointerDown(id, sx, sy);
-                    }
-                    else if ((ti.dwFlags & TOUCHEVENTF_MOVE) != 0)
-                        _owner.HostPointerMove(id, sx, sy);
-                    else if ((ti.dwFlags & TOUCHEVENTF_UP) != 0)
-                    {
-                        Logger.Info($"[Host] WM_TOUCH UP id={id} at=({sx:F1},{sy:F1})");
-                        _owner.HostPointerUp(id, sx, sy);
-                    }
-                }
-                CloseTouchInputHandle(lParam);
-                handled = true;
-            }
+            // Disable only game-interfering gestures, keep touch input functional
+            handled = true;
+            return new IntPtr(TABLET_DISABLE_GAME_GESTURES);
         }
         else if (msg == WM_POINTERDOWN || msg == WM_POINTERUPDATE || msg == WM_POINTERUP)
         {
@@ -138,8 +124,11 @@ internal sealed class InputSurfaceHost : HwndHost
                 if (msg == WM_POINTERDOWN) { Logger.Info($"[Host] WM_POINTER DOWN id={pointerId} at=({sx},{sy})"); _owner.HostPointerDown(pointerId, sx, sy); }
                 else if (msg == WM_POINTERUPDATE) { _owner.HostPointerMove(pointerId, sx, sy); }
                 else { Logger.Info($"[Host] WM_POINTER UP id={pointerId} at=({sx},{sy})"); _owner.HostPointerUp(pointerId, sx, sy); }
-                handled = true;
             }
+            // CRITICAL: Return 0 (don't call DefWindowProc) to prevent mouse message promotion
+            // and WM_LBUTTONDBLCLK generation from rapid taps
+            handled = true;
+            return IntPtr.Zero;
         }
         else if (msg == 0x0014) // WM_ERASEBKGND
         {
@@ -191,31 +180,7 @@ internal sealed class InputSurfaceHost : HwndHost
     private static extern bool MoveWindow(IntPtr hWnd, int X, int Y, int nWidth, int nHeight, bool bRepaint);
 
     [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool RegisterTouchWindow(IntPtr hWnd, uint ulFlags);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool GetTouchInputInfo(IntPtr hTouchInput, int cInputs, [In, Out] TOUCHINPUT[] pInputs, int cbSize);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool CloseTouchInputHandle(IntPtr lParam);
-
-    [DllImport("user32.dll", SetLastError = true)]
     private static extern bool GetPointerInfo(uint pointerId, out POINTER_INFO pointerInfo);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct TOUCHINPUT
-    {
-        public int x;
-        public int y;
-        public IntPtr hSource;
-        public uint dwID;
-        public uint dwFlags;
-        public uint dwMask;
-        public uint dwTime;
-        public IntPtr dwExtraInfo;
-        public uint cxContact;
-        public uint cyContact;
-    }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct POINTER_INFO
@@ -244,10 +209,6 @@ internal sealed class InputSurfaceHost : HwndHost
         public int X;
         public int Y;
     }
-
-    private const uint TOUCHEVENTF_MOVE = 0x0001;
-    private const uint TOUCHEVENTF_DOWN = 0x0002;
-    private const uint TOUCHEVENTF_UP = 0x0004;
 
     [DllImport("user32.dll")]
     private static extern IntPtr DefWindowProc(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);

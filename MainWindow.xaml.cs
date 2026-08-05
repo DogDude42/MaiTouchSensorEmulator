@@ -86,11 +86,27 @@ public partial class MainWindow : Window
             _touchPanel = new TouchPanel();
             _touchPanel.onTouch = (value) => { 
                 buttonState.PressButton(value);
-                connector.SendTouchscreenState();
+                // Force immediate staggered send for ring buttons (outer buttons) to ensure double-tap transitions are captured
+                if (RingButtonEmulator.HasRingButtonMapping(value))
+                {
+                    connector.ForceSendStaggered();
+                }
+                else
+                {
+                    connector.RequestSend();
+                }
             };
             _touchPanel.onRelease = (value) => {
                 buttonState.ReleaseButton(value);
-                connector.SendTouchscreenState();
+                // Force immediate staggered send for ring buttons (outer buttons) to ensure double-tap transitions are captured
+                if (RingButtonEmulator.HasRingButtonMapping(value))
+                {
+                    connector.ForceSendStaggered();
+                }
+                else
+                {
+                    connector.RequestSend();
+                }
             };
             _touchPanel.onInitialReposition = () => { WindowState = WindowState.Minimized; };
             _touchPanel.SetBorderMode((BorderSetting)Properties.Settings.Default.BorderSetting, dataContext.BorderColour);
@@ -319,7 +335,7 @@ public partial class MainWindow : Window
     {
         txtBorderHexColor.IsEnabled = true;
         Properties.Settings.Default.BorderSetting = (int)BorderSetting.Solid;
-
+        
         Properties.Settings.Default.Save();
 
         _touchPanel?.SetBorderMode(BorderSetting.Solid, Properties.Settings.Default.BorderColour);
@@ -329,7 +345,7 @@ public partial class MainWindow : Window
     {
         txtBorderHexColor.IsEnabled = false;
         Properties.Settings.Default.BorderSetting = (int)BorderSetting.Rainbow;
-
+        
         Properties.Settings.Default.Save();
 
         _touchPanel?.SetBorderMode(BorderSetting.Rainbow, "");
