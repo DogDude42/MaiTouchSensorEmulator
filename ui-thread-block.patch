@@ -1,0 +1,104 @@
+diff --git a/Managers/MaiTouchComConnector.cs b/Managers/MaiTouchComConnector.cs
+index 555921c..39de7fa 100644
+--- a/Managers/MaiTouchComConnector.cs
++++ b/Managers/MaiTouchComConnector.cs
+@@ -18,9 +18,16 @@ internal class MaiTouchComConnector(MaiTouchSensorButtonStateManager buttonState
+     private bool _sendPending;
+     private byte[] _lastSentState = [];
+ 
+-    // For simultaneous multi-finger taps: ensure each transition gets a frame
++    // For simultaneous multi-finger taps: ensure each transition gets a frame.
++    // Sends are staggered on a dedicated worker thread, never on the caller's thread —
++    // ForceSendStaggered() is invoked directly from InputSurfaceHost.WndProc (the UI
++    // thread), and Thread.Sleep-ing there during fast play queues up the next real
++    // WM_POINTER message behind the stagger delay.
+     private DateTime _lastForceSend = DateTime.MinValue;
+     private readonly TimeSpan _minForceSendInterval = TimeSpan.FromMilliseconds(2);
++    private readonly System.Collections.Concurrent.ConcurrentQueue<byte[]> _forceSendQueue = new();
++    private readonly AutoResetEvent _forceSendSignal = new(false);
++    private Thread? _forceSendThread;
+ 
+     public Action<string>? OnConnectStatusChange
+     {
+@@ -69,6 +76,10 @@ internal class MaiTouchComConnector(MaiTouchSensorButtonStateManager buttonState
+                 _pollThread.Priority = ThreadPriority.Highest;
+                 _pollThread.Start();
+ 
++                _forceSendThread = new Thread(() => ForceSendWorker(_tokenSource.Token));
++                _forceSendThread.Priority = ThreadPriority.Highest;
++                _forceSendThread.Start();
++
+             }
+             catch (TimeoutException) { }
+             catch (Exception ex)
+@@ -120,7 +131,9 @@ internal class MaiTouchComConnector(MaiTouchSensorButtonStateManager buttonState
+             if (_tokenSource != null && !_tokenSource.IsCancellationRequested)
+             {
+                 _tokenSource.Cancel();
++                _forceSendSignal.Set();
+                 _pollThread?.Join();
++                _forceSendThread?.Join();
+                 _tokenSource.Dispose();
+                 _tokenSource = null;
+             }
+@@ -266,21 +279,51 @@ internal class MaiTouchComConnector(MaiTouchSensorButtonStateManager buttonState
+         }
+     }
+ 
+-    // For simultaneous multi-finger taps: ensure each transition gets a frame
++    // For simultaneous multi-finger taps: ensure each transition gets a frame.
++    // Non-blocking: snapshots state and hands off to the worker thread immediately,
++    // so the caller (InputSurfaceHost.WndProc, on the UI thread) never sleeps.
+     public void ForceSendStaggered()
+     {
+         if (!_connected || !_isActiveMode) return;
+-
+-        // Stagger rapid force-sends by at least 2ms to ensure separate serial frames
+-        var now = DateTime.UtcNow;
+-        var elapsed = now - _lastForceSend;
+-        if (elapsed < _minForceSendInterval)
++        var state = _buttonState.GetCurrentState();
++        lock (_sendLock)
+         {
+-            Thread.Sleep(_minForceSendInterval - elapsed);
++            _sendPending = false; // cancel any pending batched send
+         }
+-        _lastForceSend = DateTime.UtcNow;
++        _forceSendQueue.Enqueue(state);
++        _forceSendSignal.Set();
++    }
++
++    private void ForceSendWorker(CancellationToken token)
++    {
++        while (!token.IsCancellationRequested)
++        {
++            _forceSendSignal.WaitOne(200);
++            while (!token.IsCancellationRequested && _forceSendQueue.TryDequeue(out var state))
++            {
++                var now = DateTime.UtcNow;
++                var elapsed = now - _lastForceSend;
++                if (elapsed < _minForceSendInterval)
++                {
++                    Thread.Sleep(_minForceSendInterval - elapsed);
++                }
++                _lastForceSend = DateTime.UtcNow;
+ 
+-        ForceSend();
++                try
++                {
++                    serialPort?.Write(state, 0, state.Length);
++                    _lastSentState = state;
++                    OnDataSent?.Invoke($"({BitConverter.ToString(state).Replace("-", "")})");
++                }
++                catch (Exception ex)
++                {
++                    if (Properties.Settings.Default.IsDebugEnabled)
++                    {
++                        Logger.Error("Error when writing to serial port on button update", ex);
++                    }
++                }
++            }
++        }
+     }
+ 
+     public void SendTouchscreenState()
