@@ -1,0 +1,34 @@
+diff --git a/TouchPanel.xaml.cs b/TouchPanel.xaml.cs
+index 05f2fd0..4914cfa 100644
+--- a/TouchPanel.xaml.cs
++++ b/TouchPanel.xaml.cs
+@@ -949,12 +949,25 @@ public partial class TouchPanel : Window
+         return result;
+     }
+ 
+-    // Returns bitmask of sensors touching a circular contact area at point p
++    // Returns bitmask of sensors touching a circular contact area at point p.
++    // Samples the center plus the precomputed inner/outer offset rings (contact-radius
++    // tolerant) rather than one exact pixel. A single-point sample flickers between
++    // adjacent sensors as the reported touch centroid jitters a few px frame to frame,
++    // which shows up as spurious press/release/press on a finger that never moved —
++    // exactly the "double tap" / early-second-hit symptom in-game.
+     private ulong SensorsAtPointMask(Point p)
+     {
+-        ulong mask = 0;
+-        // Center point only - single sample, no ring sampling
+-        mask |= PointToMask(p);
++        ulong mask = PointToMask(p);
++        var outer = _circleOffsets;
++        for (int i = 0; i < outer.Length; i++)
++        {
++            mask |= PointToMask(new Point(p.X + outer[i].X, p.Y + outer[i].Y));
++        }
++        var inner = _innerCircleOffsets;
++        for (int i = 0; i < inner.Length; i++)
++        {
++            mask |= PointToMask(new Point(p.X + inner[i].X, p.Y + inner[i].Y));
++        }
+         return mask;
+     }
+ 
