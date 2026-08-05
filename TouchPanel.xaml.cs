@@ -127,12 +127,12 @@ public partial class TouchPanel : Window
         // Touch.FrameReported += OnTouchFrameReported;
         try
         {
-            _contactRadiusPx = Math.Max(10, Properties.Settings.Default.ContactRadiusPx);
+            _contactRadiusPx = Math.Max(0, Properties.Settings.Default.ContactRadiusPx);
             Properties.Settings.Default.PropertyChanged += (s, e) =>
             {
                 if (e.PropertyName == nameof(Properties.Settings.Default.ContactRadiusPx))
                 {
-                    _contactRadiusPx = Math.Max(10, Properties.Settings.Default.ContactRadiusPx);
+                    _contactRadiusPx = Math.Max(0, Properties.Settings.Default.ContactRadiusPx);
                     Application.Current.Dispatcher.Invoke(UpdateAllDebugEllipseSizes);
                     RecomputeCircleOffsets();
                 }

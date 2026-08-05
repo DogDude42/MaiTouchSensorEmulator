@@ -201,7 +201,7 @@
                             Margin="4,0"
                             LargeChange="5"
                             Maximum="200"
-                            Minimum="10"
+                            Minimum="0"
                             SmallChange="1"
                             Value="{Binding ContactRadiusPx, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
                         <ui:TextBox
