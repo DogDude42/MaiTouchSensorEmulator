@@ -413,6 +413,8 @@ public partial class TouchPanel : Window
     public void SetDebugMode(bool enabled)
     {
         isDebugEnabled = enabled;
+        if (enabled) InputTracer.Start();
+        InputTracer.Enabled = enabled;
         buttons.ForEach(button =>
         {
             button.Opacity = enabled ? 0.3 : 0;
@@ -886,6 +888,7 @@ public partial class TouchPanel : Window
             UpdateDebugEllipse(id, canvasPoint);
         }
         ulong mask = SensorsAtPointMask(canvasPoint);
+        InputTracer.Event("MASK", $"id={id} DOWN at=({canvasPoint.X:F1},{canvasPoint.Y:F1}) mask=0x{mask:X}");
         PressSensorMask(mask);
         _pointerStates[id] = new PointerTrack(canvasPoint, mask);
     }
@@ -911,6 +914,10 @@ public partial class TouchPanel : Window
         // Diff masks
         ulong added = nextMask & ~track.CurrentMask;
         ulong removed = track.CurrentMask & ~nextMask;
+        if (added != 0 || removed != 0)
+        {
+            InputTracer.Event("MASK", $"id={id} MOVE at=({canvasPoint.X:F1},{canvasPoint.Y:F1}) prevMask=0x{track.CurrentMask:X} nextMask=0x{nextMask:X} added=0x{added:X} removed=0x{removed:X}");
+        }
         PressSensorMask(added);
         ReleaseSensorMask(removed);
 
@@ -922,6 +929,7 @@ public partial class TouchPanel : Window
     {
         if (_pointerStates.TryGetValue(id, out var track))
         {
+            InputTracer.Event("MASK", $"id={id} UP at=({canvasPoint.X:F1},{canvasPoint.Y:F1}) releasingMask=0x{track.CurrentMask:X}");
             ReleaseSensorMask(track.CurrentMask);
             _pointerStates.Remove(id);
         }
@@ -996,12 +1004,17 @@ public partial class TouchPanel : Window
             _sensorHoldCounts[tv] = c + 1;
             if (c == 0)
             {
+                InputTracer.Event("SENSOR", $"PRESS {tv}");
                 onTouch?.Invoke(tv);
                 if (isRingButtonEmulationEnabled && RingButtonEmulator.HasRingButtonMapping(tv))
                 {
                     RingButtonEmulator.PressButton(tv);
                 }
                 if (_polygonByValue.TryGetValue(tv, out var poly)) HighlightElement(poly, true);
+            }
+            else
+            {
+                InputTracer.Event("SENSOR", $"press {tv} (already held, count={c + 1})");
             }
             mask &= mask - 1; // clear lowest set bit
         }
@@ -1015,6 +1028,7 @@ public partial class TouchPanel : Window
             var tv = _polygons[bit].Value;
             if (!_sensorHoldCounts.TryGetValue(tv, out var c))
             {
+                InputTracer.Event("SENSOR", $"release {tv} ignored (not held)");
                 mask &= mask - 1;
                 continue;
             }
@@ -1022,6 +1036,7 @@ public partial class TouchPanel : Window
             if (c <= 0)
             {
                 _sensorHoldCounts.Remove(tv);
+                InputTracer.Event("SENSOR", $"RELEASE {tv}");
                 onRelease?.Invoke(tv);
                 if (isRingButtonEmulationEnabled)
                 {

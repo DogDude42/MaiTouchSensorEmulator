@@ -121,9 +121,21 @@ internal sealed class InputSurfaceHost : HwndHost
             {
                 double sx = pi.ptPixelLocation.X;
                 double sy = pi.ptPixelLocation.Y;
-                if (msg == WM_POINTERDOWN) { Logger.Info($"[Host] WM_POINTER DOWN id={pointerId} at=({sx},{sy})"); _owner.HostPointerDown(pointerId, sx, sy); }
-                else if (msg == WM_POINTERUPDATE) { _owner.HostPointerMove(pointerId, sx, sy); }
-                else { Logger.Info($"[Host] WM_POINTER UP id={pointerId} at=({sx},{sy})"); _owner.HostPointerUp(pointerId, sx, sy); }
+                if (msg == WM_POINTERDOWN)
+                {
+                    InputTracer.Event("POINTER", $"DOWN id={pointerId} at=({sx},{sy}) flags=0x{pi.pointerFlags:X}");
+                    _owner.HostPointerDown(pointerId, sx, sy);
+                }
+                else if (msg == WM_POINTERUPDATE)
+                {
+                    InputTracer.Event("POINTER", $"MOVE id={pointerId} at=({sx},{sy}) flags=0x{pi.pointerFlags:X}");
+                    _owner.HostPointerMove(pointerId, sx, sy);
+                }
+                else
+                {
+                    InputTracer.Event("POINTER", $"UP   id={pointerId} at=({sx},{sy}) flags=0x{pi.pointerFlags:X}{(  (pi.pointerFlags & 0x8) != 0 ? " [CANCELED]" : "")}");
+                    _owner.HostPointerUp(pointerId, sx, sy);
+                }
             }
             // CRITICAL: Return 0 (don't call DefWindowProc) to prevent mouse message promotion
             // and WM_LBUTTONDBLCLK generation from rapid taps

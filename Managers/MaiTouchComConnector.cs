@@ -286,6 +286,7 @@ internal class MaiTouchComConnector(MaiTouchSensorButtonStateManager buttonState
     {
         if (!_connected || !_isActiveMode) return;
         var state = _buttonState.GetCurrentState();
+        InputTracer.Event("SEND", $"enqueue staggered bytes={BitConverter.ToString(state).Replace("-", "")}");
         lock (_sendLock)
         {
             _sendPending = false; // cancel any pending batched send
@@ -313,6 +314,7 @@ internal class MaiTouchComConnector(MaiTouchSensorButtonStateManager buttonState
                 {
                     serialPort?.Write(state, 0, state.Length);
                     _lastSentState = state;
+                    InputTracer.Event("SEND", $"wrote staggered bytes={BitConverter.ToString(state).Replace("-", "")}");
                     OnDataSent?.Invoke($"({BitConverter.ToString(state).Replace("-", "")})");
                 }
                 catch (Exception ex)

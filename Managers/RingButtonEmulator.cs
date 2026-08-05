@@ -34,6 +34,7 @@ public partial class RingButtonEmulator
     {
         if (touchRingMapping.TryGetValue(touchValue, out var vk))
         {
+            InputTracer.Event("KEY", $"DOWN {touchValue} vk=0x{vk:X2}");
             keybd_event(vk, 0, 0, nuint.Zero);
         }
     }
@@ -42,6 +43,7 @@ public partial class RingButtonEmulator
     {
         if (touchRingMapping.TryGetValue(touchValue, out var vk))
         {
+            InputTracer.Event("KEY", $"UP   {touchValue} vk=0x{vk:X2}");
             keybd_event(vk, 0, KEYEVENTF_KEYUP, nuint.Zero);
         }
     }

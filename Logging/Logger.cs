@@ -81,6 +81,7 @@ public static class Logger
             logMessage.AppendLine($"Exception: {ex.Message}");
             logMessage.AppendLine($"StackTrace: {ex.StackTrace}");
         }
+
         Log("FATAL", logMessage.ToString());
     }
 
@@ -91,7 +92,7 @@ public static class Logger
             lock (lockObj)
             {
                 using var sw = new StreamWriter(GetLogFilePath(), true, Encoding.UTF8);
-                sw.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} [{level}] {message}");
+                sw.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} [{level}] {message}");
             }
         }
         catch

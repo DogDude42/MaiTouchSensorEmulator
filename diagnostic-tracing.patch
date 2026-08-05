@@ -1,0 +1,348 @@
+diff --git a/InputSurfaceHost.cs b/InputSurfaceHost.cs
+index 362475a..69ae4a2 100644
+--- a/InputSurfaceHost.cs
++++ b/InputSurfaceHost.cs
+@@ -121,9 +121,21 @@ internal sealed class InputSurfaceHost : HwndHost
+             {
+                 double sx = pi.ptPixelLocation.X;
+                 double sy = pi.ptPixelLocation.Y;
+-                if (msg == WM_POINTERDOWN) { Logger.Info($"[Host] WM_POINTER DOWN id={pointerId} at=({sx},{sy})"); _owner.HostPointerDown(pointerId, sx, sy); }
+-                else if (msg == WM_POINTERUPDATE) { _owner.HostPointerMove(pointerId, sx, sy); }
+-                else { Logger.Info($"[Host] WM_POINTER UP id={pointerId} at=({sx},{sy})"); _owner.HostPointerUp(pointerId, sx, sy); }
++                if (msg == WM_POINTERDOWN)
++                {
++                    InputTracer.Event("POINTER", $"DOWN id={pointerId} at=({sx},{sy}) flags=0x{pi.pointerFlags:X}");
++                    _owner.HostPointerDown(pointerId, sx, sy);
++                }
++                else if (msg == WM_POINTERUPDATE)
++                {
++                    InputTracer.Event("POINTER", $"MOVE id={pointerId} at=({sx},{sy}) flags=0x{pi.pointerFlags:X}");
++                    _owner.HostPointerMove(pointerId, sx, sy);
++                }
++                else
++                {
++                    InputTracer.Event("POINTER", $"UP   id={pointerId} at=({sx},{sy}) flags=0x{pi.pointerFlags:X}{(  (pi.pointerFlags & 0x8) != 0 ? " [CANCELED]" : "")}");
++                    _owner.HostPointerUp(pointerId, sx, sy);
++                }
+             }
+             // CRITICAL: Return 0 (don't call DefWindowProc) to prevent mouse message promotion
+             // and WM_LBUTTONDBLCLK generation from rapid taps
+diff --git a/Logging/InputTracer.cs b/Logging/InputTracer.cs
+new file mode 100644
+index 0000000..abd3e22
+--- /dev/null
++++ b/Logging/InputTracer.cs
+@@ -0,0 +1,69 @@
++﻿using System.Collections.Concurrent;
++using System.Diagnostics;
++using System.IO;
++using System.Text;
++
++// Diagnostic-only tracer for the touch -> sensor -> serial pipeline.
++// Separate from Logger on purpose: Logger writes synchronously (open/lock/write/close
++// per call) with second-resolution timestamps, which is fine for status messages but
++// both too coarse and too slow to use on the input hot path. This queues a monotonic,
++// sub-millisecond-resolution line and returns immediately; a background thread does the
++// actual file I/O, so enabling tracing doesn't itself introduce the kind of delay we're
++// trying to diagnose.
++//
++// Wired to the existing "debug mode" toggle (TouchPanel.SetDebugMode) — turn debug mode
++// on, reproduce one bad hit, turn it back off, then read the newest trace_*.log in
++// %LocalAppData%\WpfMaiTouchEmulator.
++public static class InputTracer
++{
++    public static volatile bool Enabled = false;
++
++    private static readonly ConcurrentQueue<string> _queue = new();
++    private static readonly AutoResetEvent _signal = new(false);
++    private static readonly Stopwatch _clock = Stopwatch.StartNew();
++    private static Thread? _writerThread;
++    private static string? _path;
++    private static readonly object _startLock = new();
++
++    public static void Start()
++    {
++        if (_writerThread != null) return;
++        lock (_startLock)
++        {
++            if (_writerThread != null) return;
++            _path = Path.Combine(Logger.GetLogPath(), $"trace_{DateTime.Now:yyyy-MM-dd_HHmmss}.log");
++            _writerThread = new Thread(WriterLoop) { IsBackground = true, Priority = ThreadPriority.BelowNormal };
++            _writerThread.Start();
++        }
++    }
++
++    // category examples: "POINTER" (raw WM_POINTER), "SENSOR" (mask press/release edges),
++    // "KEY" (RingButtonEmulator keybd_event), "SEND" (serial writes / queue latency)
++    public static void Event(string category, string message)
++    {
++        if (!Enabled) return;
++        var ms = _clock.Elapsed.TotalMilliseconds;
++        _queue.Enqueue($"{ms:F3} [{category}] {message}");
++        _signal.Set();
++    }
++
++    private static void WriterLoop()
++    {
++        while (true)
++        {
++            _signal.WaitOne(100);
++            if (_queue.IsEmpty) continue;
++            try
++            {
++                using var sw = new StreamWriter(_path!, true, Encoding.UTF8);
++                while (_queue.TryDequeue(out var line))
++                {
++                    sw.WriteLine(line);
++                }
++            }
++            catch
++            {
++            }
++        }
++    }
++}
+diff --git a/Logging/Logger.cs b/Logging/Logger.cs
+index f371432..f655933 100644
+--- a/Logging/Logger.cs
++++ b/Logging/Logger.cs
+@@ -91,7 +91,7 @@ public static class Logger
+             lock (lockObj)
+             {
+                 using var sw = new StreamWriter(GetLogFilePath(), true, Encoding.UTF8);
+-                sw.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} [{level}] {message}");
++                sw.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} [{level}] {message}");
+             }
+         }
+         catch
+diff --git a/Managers/MaiTouchComConnector.cs b/Managers/MaiTouchComConnector.cs
+index 555921c..335142d 100644
+--- a/Managers/MaiTouchComConnector.cs
++++ b/Managers/MaiTouchComConnector.cs
+@@ -18,9 +18,16 @@ internal class MaiTouchComConnector(MaiTouchSensorButtonStateManager buttonState
+     private bool _sendPending;
+     private byte[] _lastSentState = [];
+ 
+-    // For simultaneous multi-finger taps: ensure each transition gets a frame
++    // For simultaneous multi-finger taps: ensure each transition gets a frame.
++    // Sends are staggered on a dedicated worker thread, never on the caller's thread —
++    // ForceSendStaggered() is invoked directly from InputSurfaceHost.WndProc (the UI
++    // thread), and Thread.Sleep-ing there during fast play queues up the next real
++    // WM_POINTER message behind the stagger delay.
+     private DateTime _lastForceSend = DateTime.MinValue;
+     private readonly TimeSpan _minForceSendInterval = TimeSpan.FromMilliseconds(2);
++    private readonly System.Collections.Concurrent.ConcurrentQueue<byte[]> _forceSendQueue = new();
++    private readonly AutoResetEvent _forceSendSignal = new(false);
++    private Thread? _forceSendThread;
+ 
+     public Action<string>? OnConnectStatusChange
+     {
+@@ -69,6 +76,10 @@ internal class MaiTouchComConnector(MaiTouchSensorButtonStateManager buttonState
+                 _pollThread.Priority = ThreadPriority.Highest;
+                 _pollThread.Start();
+ 
++                _forceSendThread = new Thread(() => ForceSendWorker(_tokenSource.Token));
++                _forceSendThread.Priority = ThreadPriority.Highest;
++                _forceSendThread.Start();
++
+             }
+             catch (TimeoutException) { }
+             catch (Exception ex)
+@@ -120,7 +131,9 @@ internal class MaiTouchComConnector(MaiTouchSensorButtonStateManager buttonState
+             if (_tokenSource != null && !_tokenSource.IsCancellationRequested)
+             {
+                 _tokenSource.Cancel();
++                _forceSendSignal.Set();
+                 _pollThread?.Join();
++                _forceSendThread?.Join();
+                 _tokenSource.Dispose();
+                 _tokenSource = null;
+             }
+@@ -266,21 +279,53 @@ internal class MaiTouchComConnector(MaiTouchSensorButtonStateManager buttonState
+         }
+     }
+ 
+-    // For simultaneous multi-finger taps: ensure each transition gets a frame
++    // For simultaneous multi-finger taps: ensure each transition gets a frame.
++    // Non-blocking: snapshots state and hands off to the worker thread immediately,
++    // so the caller (InputSurfaceHost.WndProc, on the UI thread) never sleeps.
+     public void ForceSendStaggered()
+     {
+         if (!_connected || !_isActiveMode) return;
+-
+-        // Stagger rapid force-sends by at least 2ms to ensure separate serial frames
+-        var now = DateTime.UtcNow;
+-        var elapsed = now - _lastForceSend;
+-        if (elapsed < _minForceSendInterval)
++        var state = _buttonState.GetCurrentState();
++        InputTracer.Event("SEND", $"enqueue staggered bytes={BitConverter.ToString(state).Replace("-", "")}");
++        lock (_sendLock)
+         {
+-            Thread.Sleep(_minForceSendInterval - elapsed);
++            _sendPending = false; // cancel any pending batched send
+         }
+-        _lastForceSend = DateTime.UtcNow;
++        _forceSendQueue.Enqueue(state);
++        _forceSendSignal.Set();
++    }
++
++    private void ForceSendWorker(CancellationToken token)
++    {
++        while (!token.IsCancellationRequested)
++        {
++            _forceSendSignal.WaitOne(200);
++            while (!token.IsCancellationRequested && _forceSendQueue.TryDequeue(out var state))
++            {
++                var now = DateTime.UtcNow;
++                var elapsed = now - _lastForceSend;
++                if (elapsed < _minForceSendInterval)
++                {
++                    Thread.Sleep(_minForceSendInterval - elapsed);
++                }
++                _lastForceSend = DateTime.UtcNow;
+ 
+-        ForceSend();
++                try
++                {
++                    serialPort?.Write(state, 0, state.Length);
++                    _lastSentState = state;
++                    InputTracer.Event("SEND", $"wrote staggered bytes={BitConverter.ToString(state).Replace("-", "")}");
++                    OnDataSent?.Invoke($"({BitConverter.ToString(state).Replace("-", "")})");
++                }
++                catch (Exception ex)
++                {
++                    if (Properties.Settings.Default.IsDebugEnabled)
++                    {
++                        Logger.Error("Error when writing to serial port on button update", ex);
++                    }
++                }
++            }
++        }
+     }
+ 
+     public void SendTouchscreenState()
+diff --git a/Managers/RingButtonEmulator.cs b/Managers/RingButtonEmulator.cs
+index bbe1700..adb416e 100644
+--- a/Managers/RingButtonEmulator.cs
++++ b/Managers/RingButtonEmulator.cs
+@@ -34,6 +34,7 @@ public partial class RingButtonEmulator
+     {
+         if (touchRingMapping.TryGetValue(touchValue, out var vk))
+         {
++            InputTracer.Event("KEY", $"DOWN {touchValue} vk=0x{vk:X2}");
+             keybd_event(vk, 0, 0, nuint.Zero);
+         }
+     }
+@@ -42,6 +43,7 @@ public partial class RingButtonEmulator
+     {
+         if (touchRingMapping.TryGetValue(touchValue, out var vk))
+         {
++            InputTracer.Event("KEY", $"UP   {touchValue} vk=0x{vk:X2}");
+             keybd_event(vk, 0, KEYEVENTF_KEYUP, nuint.Zero);
+         }
+     }
+diff --git a/TouchPanel.xaml.cs b/TouchPanel.xaml.cs
+index 05f2fd0..5a78ff7 100644
+--- a/TouchPanel.xaml.cs
++++ b/TouchPanel.xaml.cs
+@@ -413,6 +413,8 @@ public partial class TouchPanel : Window
+     public void SetDebugMode(bool enabled)
+     {
+         isDebugEnabled = enabled;
++        if (enabled) InputTracer.Start();
++        InputTracer.Enabled = enabled;
+         buttons.ForEach(button =>
+         {
+             button.Opacity = enabled ? 0.3 : 0;
+@@ -886,6 +888,7 @@ public partial class TouchPanel : Window
+             UpdateDebugEllipse(id, canvasPoint);
+         }
+         ulong mask = SensorsAtPointMask(canvasPoint);
++        InputTracer.Event("MASK", $"id={id} DOWN at=({canvasPoint.X:F1},{canvasPoint.Y:F1}) mask=0x{mask:X}");
+         PressSensorMask(mask);
+         _pointerStates[id] = new PointerTrack(canvasPoint, mask);
+     }
+@@ -911,6 +914,10 @@ public partial class TouchPanel : Window
+         // Diff masks
+         ulong added = nextMask & ~track.CurrentMask;
+         ulong removed = track.CurrentMask & ~nextMask;
++        if (added != 0 || removed != 0)
++        {
++            InputTracer.Event("MASK", $"id={id} MOVE at=({canvasPoint.X:F1},{canvasPoint.Y:F1}) prevMask=0x{track.CurrentMask:X} nextMask=0x{nextMask:X} added=0x{added:X} removed=0x{removed:X}");
++        }
+         PressSensorMask(added);
+         ReleaseSensorMask(removed);
+ 
+@@ -922,6 +929,7 @@ public partial class TouchPanel : Window
+     {
+         if (_pointerStates.TryGetValue(id, out var track))
+         {
++            InputTracer.Event("MASK", $"id={id} UP at=({canvasPoint.X:F1},{canvasPoint.Y:F1}) releasingMask=0x{track.CurrentMask:X}");
+             ReleaseSensorMask(track.CurrentMask);
+             _pointerStates.Remove(id);
+         }
+@@ -949,12 +957,25 @@ public partial class TouchPanel : Window
+         return result;
+     }
+ 
+-    // Returns bitmask of sensors touching a circular contact area at point p
++    // Returns bitmask of sensors touching a circular contact area at point p.
++    // Samples the center plus the precomputed inner/outer offset rings (contact-radius
++    // tolerant) rather than one exact pixel. A single-point sample flickers between
++    // adjacent sensors as the reported touch centroid jitters a few px frame to frame,
++    // which shows up as spurious press/release/press on a finger that never moved —
++    // exactly the "double tap" / early-second-hit symptom in-game.
+     private ulong SensorsAtPointMask(Point p)
+     {
+-        ulong mask = 0;
+-        // Center point only - single sample, no ring sampling
+-        mask |= PointToMask(p);
++        ulong mask = PointToMask(p);
++        var outer = _circleOffsets;
++        for (int i = 0; i < outer.Length; i++)
++        {
++            mask |= PointToMask(new Point(p.X + outer[i].X, p.Y + outer[i].Y));
++        }
++        var inner = _innerCircleOffsets;
++        for (int i = 0; i < inner.Length; i++)
++        {
++            mask |= PointToMask(new Point(p.X + inner[i].X, p.Y + inner[i].Y));
++        }
+         return mask;
+     }
+ 
+@@ -983,6 +1004,7 @@ public partial class TouchPanel : Window
+             _sensorHoldCounts[tv] = c + 1;
+             if (c == 0)
+             {
++                InputTracer.Event("SENSOR", $"PRESS {tv}");
+                 onTouch?.Invoke(tv);
+                 if (isRingButtonEmulationEnabled && RingButtonEmulator.HasRingButtonMapping(tv))
+                 {
+@@ -990,6 +1012,10 @@ public partial class TouchPanel : Window
+                 }
+                 if (_polygonByValue.TryGetValue(tv, out var poly)) HighlightElement(poly, true);
+             }
++            else
++            {
++                InputTracer.Event("SENSOR", $"press {tv} (already held, count={c + 1})");
++            }
+             mask &= mask - 1; // clear lowest set bit
+         }
+     }
+@@ -1002,6 +1028,7 @@ public partial class TouchPanel : Window
+             var tv = _polygons[bit].Value;
+             if (!_sensorHoldCounts.TryGetValue(tv, out var c))
+             {
++                InputTracer.Event("SENSOR", $"release {tv} ignored (not held)");
+                 mask &= mask - 1;
+                 continue;
+             }
+@@ -1009,6 +1036,7 @@ public partial class TouchPanel : Window
+             if (c <= 0)
+             {
+                 _sensorHoldCounts.Remove(tv);
++                InputTracer.Event("SENSOR", $"RELEASE {tv}");
+                 onRelease?.Invoke(tv);
+                 if (isRingButtonEmulationEnabled)
+                 {
