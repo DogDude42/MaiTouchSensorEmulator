@@ -33,12 +33,6 @@ public sealed class TouchSensorEngine
     public double GetTouchRadius() => _touchRadius;
     public double GetButtonRadius() => _buttonRadius;
     
-    // Precomputed sampling offsets
-    private Point[] _touchOffsets = [];
-    private Point[] _touchInnerOffsets = [];
-    private Point[] _buttonOffsets = [];
-    private Point[] _buttonInnerOffsets = [];
-    
     // Button sensor mask (A1-A8, D1-D8)
     private readonly ulong _buttonMask;
     
@@ -54,6 +48,7 @@ public sealed class TouchSensorEngine
         double touchRadius = 35,
         double buttonRadius = 25)
     {
+        // Radii stored for settings sync only
         _touchRadius = touchRadius;
         _buttonRadius = buttonRadius;
         
@@ -103,8 +98,6 @@ public sealed class TouchSensorEngine
         
         // Button mask: A1-A8 (bits 0-7) + D1-D8 (bits 18-25)
         _buttonMask = 0xFFUL | (0xFFUL << 18);
-        
-        RecomputeOffsets();
     }
     
     private static bool IsButtonSensor(TouchValue tv) => 
@@ -117,27 +110,6 @@ public sealed class TouchSensorEngine
     {
         _touchRadius = Math.Max(0, touchRadius);
         _buttonRadius = Math.Max(0, buttonRadius);
-        RecomputeOffsets();
-    }
-    
-    private void RecomputeOffsets()
-    {
-        int n = 16;
-        _touchOffsets = ComputeOffsets(_touchRadius, n);
-        _touchInnerOffsets = ComputeOffsets(_touchRadius * 0.5, n);
-        _buttonOffsets = ComputeOffsets(_buttonRadius, n);
-        _buttonInnerOffsets = ComputeOffsets(_buttonRadius * 0.5, n);
-    }
-    
-    private static Point[] ComputeOffsets(double radius, int n)
-    {
-        var result = new Point[n];
-        for (int i = 0; i < n; i++)
-        {
-            double ang = i * 2.0 * Math.PI / n;
-            result[i] = new Point(Math.Cos(ang) * radius, Math.Sin(ang) * radius);
-        }
-        return result;
     }
     
     public void PointerDown(uint id, Point canvasPoint)
@@ -185,20 +157,8 @@ public sealed class TouchSensorEngine
     
     private ulong GetMaskAtPoint(Point p)
     {
-        // Center point
-        ulong mask = PointToMask(p);
-        
-        // Touch radius samples (for B/C/E groups)
-        foreach (var off in _touchOffsets) mask |= PointToMask(new Point(p.X + off.X, p.Y + off.Y));
-        foreach (var off in _touchInnerOffsets) mask |= PointToMask(new Point(p.X + off.X, p.Y + off.Y));
-        
-        // Button radius samples (for A/D groups)
-        ulong buttonMask = 0;
-        foreach (var off in _buttonOffsets) buttonMask |= PointToMask(new Point(p.X + off.X, p.Y + off.Y));
-        foreach (var off in _buttonInnerOffsets) buttonMask |= PointToMask(new Point(p.X + off.X, p.Y + off.Y));
-        
-        // Combine: button sensors use button radius, touch sensors use touch radius
-        return (mask & ~_buttonMask) | (buttonMask & _buttonMask);
+        // Direct polygon hit-testing - no circular sampling, no gaps
+        return PointToMask(p);
     }
     
     private ulong GetMaskAlongPath(Point from, Point to)

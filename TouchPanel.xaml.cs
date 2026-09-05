@@ -162,7 +162,7 @@ public partial class TouchPanel : Window
     {
         var canvasPoint = TouchCanvas.PointFromScreen(screenPoint);
         if (_touchEngine == null) return;
-        
+
         if (action == ACT_DOWN)
             _touchEngine.PointerDown((uint)id, canvasPoint);
         else if (action == ACT_MOVE)
@@ -413,39 +413,6 @@ public partial class TouchPanel : Window
         }
     }
 
-    private void EnsureDebugEllipse(uint id)
-    {
-        if (_debugEllipses.ContainsKey(id)) return;
-        var el = new Ellipse
-        {
-            Stroke = Brushes.Lime,
-            StrokeThickness = 2,
-            Fill = Brushes.Transparent,
-            Opacity = 0.9,
-            IsHitTestVisible = false,
-        };
-        _debugEllipses[id] = el;
-        TouchCanvas.Children.Add(el);
-        Panel.SetZIndex(el, int.MaxValue);
-        UpdateDebugEllipseSize(el);
-    }
-
-    private void UpdateDebugEllipse(uint id, Point center)
-    {
-        if (!_debugEllipses.TryGetValue(id, out var el)) return;
-        UpdateDebugEllipseSize(el);
-        var r = _touchEngine?.GetTouchRadius() ?? 35;
-        Canvas.SetLeft(el, center.X - r);
-        Canvas.SetTop(el, center.Y - r);
-    }
-
-    private void UpdateDebugEllipseSize(Ellipse el)
-    {
-        var r = _touchEngine?.GetTouchRadius() ?? 35;
-        el.Width = r * 2;
-        el.Height = r * 2;
-    }
-
     public void SetDebugMode(bool enabled)
     {
         isDebugEnabled = enabled;
@@ -455,22 +422,6 @@ public partial class TouchPanel : Window
         {
             button.Opacity = enabled ? 0.3 : 0;
         });
-        if (!enabled)
-        {
-            foreach (var kv in _debugEllipses.ToList())
-            {
-                TouchCanvas.Children.Remove(kv.Value);
-                _debugEllipses.Remove(kv.Key);
-            }
-        }
-        else
-        {
-            foreach (var kv in _pointerStates)
-            {
-                EnsureDebugEllipse(kv.Key);
-                UpdateDebugEllipse(kv.Key, kv.Value.Last);
-            }
-        }
     }
 
     public void SetLargeButtonMode(bool enabled)
@@ -854,4 +805,5 @@ public partial class TouchPanel : Window
             ];
         }
     }
-}
+
+    }
