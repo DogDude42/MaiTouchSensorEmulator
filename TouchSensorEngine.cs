@@ -20,6 +20,9 @@ public sealed class TouchSensorEngine
     private readonly SensorGeometry[] _sensors;
     private readonly ushort[] _sensorIdToIndex; // TouchValue -> index
     
+    // Precomputed centroids for Voronoi hit-testing
+    private readonly Point[] _centroids;
+    
     // Per-pointer state
     private readonly ConcurrentDictionary<uint, PointerState> _pointers = new();
     
@@ -96,6 +99,20 @@ public sealed class TouchSensorEngine
         foreach (var kv in idToIndex)
             _sensorIdToIndex[GetBitIndex(kv.Key)] = (ushort)kv.Value;
         
+        // Precompute centroids for Voronoi hit-testing
+        _centroids = new Point[_sensors.Length];
+        for (int i = 0; i < _sensors.Length; i++)
+        {
+            var pts = _sensors[i].Points;
+            double cx = 0, cy = 0;
+            for (int j = 0; j < pts.Length; j++)
+            {
+                cx += pts[j].X;
+                cy += pts[j].Y;
+            }
+            _centroids[i] = new Point(cx / pts.Length, cy / pts.Length);
+        }
+        
         _holdCounts = new int[_sensors.Length];
         
         // Button mask: A1-A8 (bits 0-7) + D1-D8 (bits 18-25)
@@ -159,12 +176,30 @@ public sealed class TouchSensorEngine
     
     private ulong GetMaskAtPoint(Point p)
     {
-        // Direct polygon hit-testing - no circular sampling, no gaps
-        return PointToMask(p);
+        // Voronoi hit-testing: find closest sensor centroid
+        double bestDist2 = double.MaxValue;
+        int bestIdx = -1;
+        for (int i = 0; i < _centroids.Length; i++)
+        {
+            var c = _centroids[i];
+            double dx = p.X - c.X;
+            double dy = p.Y - c.Y;
+            double dist2 = dx * dx + dy * dy;
+            if (dist2 < bestDist2)
+            {
+                bestDist2 = dist2;
+                bestIdx = i;
+            }
+        }
+        ulong mask = 0;
+        if (bestIdx >= 0)
+            mask = 1UL << bestIdx;
+        return mask;
     }
     
     private ulong GetMaskAlongPath(Point from, Point to)
     {
+        // For slides: sample path and union Voronoi results
         var dx = to.X - from.X;
         var dy = to.Y - from.Y;
         var dist = Math.Sqrt(dx * dx + dy * dy);
@@ -179,20 +214,10 @@ public sealed class TouchSensorEngine
         return result;
     }
     
+    // Kept for compatibility but no longer used for hit-testing
     private ulong PointToMask(Point p)
     {
-        ulong mask = 0;
-        for (int i = 0; i < _sensors.Length; i++)
-        {
-            var s = _sensors[i];
-            // Use slightly expanded bounds to fill gaps between adjacent sensors
-            const double expansion = 2.0; // pixels
-            if (p.X < s.MinX - expansion || p.X > s.MaxX + expansion || p.Y < s.MinY - expansion || p.Y > s.MaxY + expansion)
-                continue;
-            if (PointInPolygon(p, s.Points))
-                mask |= (1UL << i);
-        }
-        return mask;
+        return GetMaskAtPoint(p);
     }
     
     private void ApplyMask(ulong mask, bool press)
