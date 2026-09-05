@@ -38,6 +38,8 @@ public sealed class TouchSensorEngine
 
     public IEnumerable<SensorGeometry> GetSensorPolygons() => _sensors;
     
+    public Point[] GetCentroids() => _centroids;
+    
     // Button sensor mask (A1-A8, D1-D8)
     private readonly ulong _buttonMask;
     

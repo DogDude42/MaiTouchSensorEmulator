@@ -414,37 +414,53 @@ public partial class TouchPanel : Window
     }
 
     public void SetDebugMode(bool enabled)
+    {
+        isDebugEnabled = enabled;
+        if (enabled)
         {
-            isDebugEnabled = enabled;
-            if (enabled)
+            InputTracer.Start();
+            // Show actual sensor polygons as debug visualization
+            foreach (var sensor in _touchEngine.GetSensorPolygons())
             {
-                InputTracer.Start();
-                // Show actual sensor polygons as debug visualization
-                foreach (var sensor in _touchEngine.GetSensorPolygons())
+                var poly = new Polygon
                 {
-                    var poly = new Polygon
-                    {
-                        Points = new PointCollection(sensor.Points),
-                        Stroke = sensor.IsButton ? Brushes.Red : Brushes.Blue,
-                        StrokeThickness = 2,
-                        Fill = new SolidColorBrush(sensor.IsButton ? Color.FromArgb(30, 255, 0, 0) : Color.FromArgb(30, 0, 0, 255)),
-                        IsHitTestVisible = false,
-                    };
-                    TouchCanvas.Children.Add(poly);
-                }
+                    Points = new PointCollection(sensor.Points),
+                    Stroke = sensor.IsButton ? Brushes.Red : Brushes.Blue,
+                    StrokeThickness = 2,
+                    Fill = new SolidColorBrush(sensor.IsButton ? Color.FromArgb(30, 255, 0, 0) : Color.FromArgb(30, 0, 0, 255)),
+                    IsHitTestVisible = false,
+                };
+                TouchCanvas.Children.Add(poly);
             }
-            else
+            // Also show Voronoi centroids
+            foreach (var centroid in _touchEngine.GetCentroids())
             {
-                TouchCanvas.Children.Clear();
+                var ellipse = new Ellipse
+                {
+                    Width = 8,
+                    Height = 8,
+                    Fill = Brushes.Yellow,
+                    Stroke = Brushes.Orange,
+                    StrokeThickness = 1,
+                    IsHitTestVisible = false,
+                };
+                Canvas.SetLeft(ellipse, centroid.X - 4);
+                Canvas.SetTop(ellipse, centroid.Y - 4);
+                TouchCanvas.Children.Add(ellipse);
             }
-            InputTracer.Enabled = enabled;
-                    buttons.ForEach(button =>
-                    {
-                        button.Opacity = enabled ? 0.3 : 0;
-                    });
-                }
+        }
+        else
+        {
+            TouchCanvas.Children.Clear();
+        }
+        InputTracer.Enabled = enabled;
+        buttons.ForEach(button =>
+        {
+            button.Opacity = enabled ? 0.3 : 0;
+        });
+    }
 
-                public void SetLargeButtonMode(bool enabled)
+    public void SetLargeButtonMode(bool enabled)
     {
         TouchValue[] ringButtonsValues = {
             TouchValue.A1,
@@ -825,5 +841,4 @@ public partial class TouchPanel : Window
             ];
         }
     }
-
-    }
+}
