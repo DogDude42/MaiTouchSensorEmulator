@@ -45,9 +45,12 @@ public partial class TouchPanel : Window
     private readonly Dictionary<TouchValue, int> _polygonIndexByValue = [];
 
     private double _contactRadiusPx;
+    private double _buttonContactRadiusPx;
     private readonly int _circleSampleCount = 16;
     private Point[] _circleOffsets = [];   // precomputed (cos, sin) * radius
     private Point[] _innerCircleOffsets = [];
+    private Point[] _buttonCircleOffsets = [];   // precomputed (cos, sin) * button radius
+    private Point[] _buttonInnerCircleOffsets = [];
     private readonly Dictionary<uint, Ellipse> _debugEllipses = [];
 
     private enum ResizeDirection
@@ -128,11 +131,18 @@ public partial class TouchPanel : Window
         try
         {
             _contactRadiusPx = Math.Max(0, Properties.Settings.Default.ContactRadiusPx);
+            _buttonContactRadiusPx = Math.Max(0, Properties.Settings.Default.ButtonContactRadiusPx);
             Properties.Settings.Default.PropertyChanged += (s, e) =>
             {
                 if (e.PropertyName == nameof(Properties.Settings.Default.ContactRadiusPx))
                 {
                     _contactRadiusPx = Math.Max(0, Properties.Settings.Default.ContactRadiusPx);
+                    Application.Current.Dispatcher.Invoke(UpdateAllDebugEllipseSizes);
+                    RecomputeCircleOffsets();
+                }
+                else if (e.PropertyName == nameof(Properties.Settings.Default.ButtonContactRadiusPx))
+                {
+                    _buttonContactRadiusPx = Math.Max(0, Properties.Settings.Default.ButtonContactRadiusPx);
                     Application.Current.Dispatcher.Invoke(UpdateAllDebugEllipseSizes);
                     RecomputeCircleOffsets();
                 }
@@ -300,6 +310,7 @@ public partial class TouchPanel : Window
 
     private void RecomputeCircleOffsets()
     {
+        // Regular touch sensors (B, C, E groups)
         var r = _contactRadiusPx;
         int n = Math.Max(8, _circleSampleCount);
         var outer = new Point[n];
@@ -315,6 +326,22 @@ public partial class TouchPanel : Window
         }
         _circleOffsets = outer;
         _innerCircleOffsets = inner;
+
+        // Button sensors (A, D groups) - separate radius
+        var br = _buttonContactRadiusPx;
+        var boutter = new Point[n];
+        var binner = new Point[n];
+        var bri = br * 0.5;
+        for (int i = 0; i < n; i++)
+        {
+            var ang = (i * 2.0 * Math.PI) / n;
+            var cos = Math.Cos(ang);
+            var sin = Math.Sin(ang);
+            boutter[i] = new Point(cos * br, sin * br);
+            binner[i] = new Point(cos * bri, sin * bri);
+        }
+        _buttonCircleOffsets = boutter;
+        _buttonInnerCircleOffsets = binner;
     }
 
     public void PositionTouchPanel()
@@ -966,16 +993,40 @@ public partial class TouchPanel : Window
     private ulong SensorsAtPointMask(Point p)
     {
         ulong mask = PointToMask(p);
+        
+        // Use appropriate offsets based on sensor type
+        // Button sensors (A1-A8, D1-D8) use button radius; others use touch radius
+        var buttonMask = 0UL;
+        var touchMask = 0UL;
+        
+        // First get all sensors at point with touch radius
         var outer = _circleOffsets;
         for (int i = 0; i < outer.Length; i++)
         {
-            mask |= PointToMask(new Point(p.X + outer[i].X, p.Y + outer[i].Y));
+            touchMask |= PointToMask(new Point(p.X + outer[i].X, p.Y + outer[i].Y));
         }
         var inner = _innerCircleOffsets;
         for (int i = 0; i < inner.Length; i++)
         {
-            mask |= PointToMask(new Point(p.X + inner[i].X, p.Y + inner[i].Y));
+            touchMask |= PointToMask(new Point(p.X + inner[i].X, p.Y + inner[i].Y));
         }
+        
+        // Get button sensors with button radius
+        var boutter = _buttonCircleOffsets;
+        for (int i = 0; i < boutter.Length; i++)
+        {
+            buttonMask |= PointToMask(new Point(p.X + boutter[i].X, p.Y + boutter[i].Y));
+        }
+        var binner = _buttonInnerCircleOffsets;
+        for (int i = 0; i < binner.Length; i++)
+        {
+            buttonMask |= PointToMask(new Point(p.X + binner[i].X, p.Y + binner[i].Y));
+        }
+        
+        // Combine: button sensors use button radius, touch sensors use touch radius
+        // Button sensors are A1-A8 (bits 0-7) and D1-D8 (bits 18-25)
+        const ulong ButtonMask = 0xFF | (0xFFUL << 18); // A1-A8 + D1-D8
+        mask |= (touchMask & ~ButtonMask) | (buttonMask & ButtonMask);
         return mask;
     }
 

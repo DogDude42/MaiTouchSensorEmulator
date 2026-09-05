@@ -157,13 +157,25 @@ namespace WpfMaiTouchEmulator.Properties {
 
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("28")]
+        [global::System.Configuration.DefaultSettingValueAttribute("35")]
         public int ContactRadiusPx {
             get {
                 return ((int)(this["ContactRadiusPx"]));
             }
             set {
                 this["ContactRadiusPx"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("25")]
+        public int ButtonContactRadiusPx {
+            get {
+                return ((int)(this["ButtonContactRadiusPx"]));
+            }
+            set {
+                this["ButtonContactRadiusPx"] = value;
             }
         }
     }

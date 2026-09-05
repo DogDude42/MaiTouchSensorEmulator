@@ -251,7 +251,8 @@ public class MainWindowViewModel : INotifyPropertyChanged
     private bool _isRingButtonEmulationEnabled;
     private string _borderColour;
     private int _contactRadiusPx;
-    private readonly ResourceManager resourceManager;
+        private int _buttonContactRadiusPx;
+        private readonly ResourceManager resourceManager;
     private readonly CultureInfo cultureInfo;
 
     public List<CultureInfo> SupportedLanguages
@@ -340,14 +341,28 @@ public class MainWindowViewModel : INotifyPropertyChanged
     }
 
     public int ContactRadiusPx
+            {
+                get => _contactRadiusPx;
+                set
+                {
+                    var clamped = Math.Max(0, value);
+                    if (_contactRadiusPx == clamped) return;
+                    _contactRadiusPx = clamped;
+                    Properties.Settings.Default.ContactRadiusPx = _contactRadiusPx;
+                    Properties.Settings.Default.Save();
+                    OnPropertyChanged();
+                }
+            }
+
+        public int ButtonContactRadiusPx
         {
-            get => _contactRadiusPx;
+            get => _buttonContactRadiusPx;
             set
             {
                 var clamped = Math.Max(0, value);
-                if (_contactRadiusPx == clamped) return;
-                _contactRadiusPx = clamped;
-                Properties.Settings.Default.ContactRadiusPx = _contactRadiusPx;
+                if (_buttonContactRadiusPx == clamped) return;
+                _buttonContactRadiusPx = clamped;
+                Properties.Settings.Default.ButtonContactRadiusPx = _buttonContactRadiusPx;
                 Properties.Settings.Default.Save();
                 OnPropertyChanged();
             }

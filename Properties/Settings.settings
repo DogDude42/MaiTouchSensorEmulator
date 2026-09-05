@@ -36,7 +36,10 @@
       <Value Profile="(Default)">False</Value>
     </Setting>
     <Setting Name="ContactRadiusPx" Type="System.Int32" Scope="User">
-      <Value Profile="(Default)">35</Value>
-    </Setting>
-  </Settings>
+          <Value Profile="(Default)">35</Value>
+        </Setting>
+        <Setting Name="ButtonContactRadiusPx" Type="System.Int32" Scope="User">
+          <Value Profile="(Default)">25</Value>
+        </Setting>
+      </Settings>
 </SettingsFile>

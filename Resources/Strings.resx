@@ -220,11 +220,17 @@
     <value>Touch radius (px)</value>
   </data>
   <data name="lbTouchRadiusTT" xml:space="preserve">
-    <value>How large the hit-scan radius around the touch point should be</value>
-  </data>
-  <data name="lbUninstallComPort" xml:space="preserve">
-    <value>Uninstall com port</value>
-  </data>
+      <value>How large the hit-scan radius around the touch point should be</value>
+    </data>
+    <data name="LbButtonRadius" xml:space="preserve">
+      <value>Button radius (px)</value>
+    </data>
+    <data name="LbButtonRadiusTT" xml:space="preserve">
+      <value>How large the hit-scan radius around the button sensors (A1-A8, D1-D8) should be. Lower values prevent accidental activation of nearby buttons.</value>
+    </data>
+    <data name="lbUninstallComPort" xml:space="preserve">
+      <value>Uninstall com port</value>
+    </data>
   <data name="TxtCom3AlreadyInstalled" xml:space="preserve">
     <value>Port COM3 already registered. Either remove it via Device Manager or uninstall the virtual port.</value>
   </data>

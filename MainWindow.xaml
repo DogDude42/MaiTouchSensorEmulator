@@ -210,6 +210,29 @@
                             HorizontalContentAlignment="Right"
                             Text="{Binding ContactRadiusPx, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
                     </StackPanel>
+                    <StackPanel
+                        Margin="0,10,0,0"
+                        VerticalAlignment="Center"
+                        Orientation="Horizontal">
+                        <Label
+                            Width="140"
+                            d:Content="Button radius (px)"
+                            Content="{Binding LbButtonRadius}"
+                            ToolTip="{Binding LbButtonRadiusTT}" />
+                        <Slider
+                            Width="150"
+                            Margin="4,0"
+                            LargeChange="5"
+                            Maximum="200"
+                            Minimum="0"
+                            SmallChange="1"
+                            Value="{Binding ButtonContactRadiusPx, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                        <ui:TextBox
+                            Width="60"
+                            Margin="8,0"
+                            HorizontalContentAlignment="Right"
+                            Text="{Binding ButtonContactRadiusPx, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                    </StackPanel>
                     <CheckBox
                         x:Name="automaticTouchPanelPositioning"
                         d:Content="Automatic touch panel positioning"
