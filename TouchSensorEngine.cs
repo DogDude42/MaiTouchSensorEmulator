@@ -32,6 +32,8 @@ public sealed class TouchSensorEngine
     
     public double GetTouchRadius() => _touchRadius;
     public double GetButtonRadius() => _buttonRadius;
+
+    public IEnumerable<SensorGeometry> GetSensorPolygons() => _sensors;
     
     // Button sensor mask (A1-A8, D1-D8)
     private readonly ulong _buttonMask;
@@ -243,13 +245,13 @@ public sealed class TouchSensorEngine
         return inside;
     }
     
-    private struct SensorGeometry
-    {
-        public TouchValue Value;
-        public Point[] Points;
-        public double MinX, MaxX, MinY, MaxY;
-        public bool IsButton;
-    }
+    public struct SensorGeometry
+        {
+            public TouchValue Value;
+            public Point[] Points;
+            public double MinX, MaxX, MinY, MaxY;
+            public bool IsButton;
+        }
     
     private sealed class PointerState
     {
