@@ -22,36 +22,26 @@ public partial class TouchPanel : Window
     internal Action<TouchValue>? onRelease;
     internal Action? onInitialReposition;
 
-    private readonly Dictionary<int, (Polygon polygon, Point lastPoint)> activeTouches = [];
     private readonly TouchPanelPositionManager _positionManager;
     private List<Polygon> buttons = [];
     private bool isDebugEnabled = Properties.Settings.Default.IsDebugEnabled;
     private bool isRingButtonEmulationEnabled = Properties.Settings.Default.IsRingButtonEmulationEnabled;
     private bool hasRepositioned = false;
 
-    // Low-latency pointer path state and precomputed geometry
+    // New optimized touch engine
+    private TouchSensorEngine? _touchEngine;
+
+    // Legacy fields for compatibility with MainWindow
+    private readonly Dictionary<int, (Polygon polygon, Point lastPoint)> activeTouches = [];
+    private readonly Dictionary<uint, Ellipse> _debugEllipses = [];
     private readonly Dictionary<uint, PointerTrack> _pointerStates = [];
-    private readonly Dictionary<TouchValue, int> _sensorHoldCounts = [];
     private readonly Dictionary<TouchValue, Polygon> _polygonByValue = [];
 
-    // Precomputed polygon data for fast hit-testing
-    private sealed class PolygonData
+    private sealed class PointerTrack
     {
-        public TouchValue Value;
-        public Point[] Points;        // absolute canvas coordinates (left+top applied)
-        public double MinX, MaxX, MinY, MaxY; // bounding box
+        public Point Last { get; set; }
+        public ulong CurrentMask { get; set; }
     }
-    private PolygonData[] _polygons = [];  // fixed array, indexed by sensor order
-    private readonly Dictionary<TouchValue, int> _polygonIndexByValue = [];
-
-    private double _contactRadiusPx;
-    private double _buttonContactRadiusPx;
-    private readonly int _circleSampleCount = 16;
-    private Point[] _circleOffsets = [];   // precomputed (cos, sin) * radius
-    private Point[] _innerCircleOffsets = [];
-    private Point[] _buttonCircleOffsets = [];   // precomputed (cos, sin) * button radius
-    private Point[] _buttonInnerCircleOffsets = [];
-    private readonly Dictionary<uint, Ellipse> _debugEllipses = [];
 
     private enum ResizeDirection
     {
@@ -83,18 +73,6 @@ public partial class TouchPanel : Window
     private const int ACT_UP = 3;
 
     // (No WM_POINTER structures here)
-
-    // Optimized: use ulong bitmask instead of HashSet for sensor sets
-    private sealed class PointerTrack
-    {
-        public Point Last;
-        public ulong CurrentMask;
-        public PointerTrack(Point last, ulong currentMask)
-        {
-            Last = last;
-            CurrentMask = currentMask;
-        }
-    }
 
     // (No WM_TOUCH interop here)
 
@@ -130,21 +108,12 @@ public partial class TouchPanel : Window
         // Touch.FrameReported += OnTouchFrameReported;
         try
         {
-            _contactRadiusPx = Math.Max(0, Properties.Settings.Default.ContactRadiusPx);
-            _buttonContactRadiusPx = Math.Max(0, Properties.Settings.Default.ButtonContactRadiusPx);
             Properties.Settings.Default.PropertyChanged += (s, e) =>
             {
-                if (e.PropertyName == nameof(Properties.Settings.Default.ContactRadiusPx))
+                if (e.PropertyName == nameof(Properties.Settings.Default.ContactRadiusPx) ||
+                    e.PropertyName == nameof(Properties.Settings.Default.ButtonContactRadiusPx))
                 {
-                    _contactRadiusPx = Math.Max(0, Properties.Settings.Default.ContactRadiusPx);
-                    Application.Current.Dispatcher.Invoke(UpdateAllDebugEllipseSizes);
-                    RecomputeCircleOffsets();
-                }
-                else if (e.PropertyName == nameof(Properties.Settings.Default.ButtonContactRadiusPx))
-                {
-                    _buttonContactRadiusPx = Math.Max(0, Properties.Settings.Default.ButtonContactRadiusPx);
-                    Application.Current.Dispatcher.Invoke(UpdateAllDebugEllipseSizes);
-                    RecomputeCircleOffsets();
+                    UpdateEngineRadii();
                 }
             };
         }
@@ -192,12 +161,14 @@ public partial class TouchPanel : Window
     private void ProcessScreenPointer(uint id, int action, Point screenPoint)
     {
         var canvasPoint = TouchCanvas.PointFromScreen(screenPoint);
+        if (_touchEngine == null) return;
+        
         if (action == ACT_DOWN)
-            HandlePointerDown(id, canvasPoint);
+            _touchEngine.PointerDown((uint)id, canvasPoint);
         else if (action == ACT_MOVE)
-            HandlePointerUpdate(id, canvasPoint);
+            _touchEngine.PointerMove((uint)id, canvasPoint);
         else if (action == ACT_UP)
-            HandlePointerUp(id, canvasPoint);
+            _touchEngine.PointerUp((uint)id, canvasPoint);
     }
 
     private void EnforceAspectRatio(ref RECT rect, SizingEdge edge)
@@ -235,18 +206,40 @@ public partial class TouchPanel : Window
 
     private void Window_Loaded(object sender, RoutedEventArgs e)
     {
+        // Find all sensor polygons
         buttons = VisualTreeHelperExtensions.FindVisualChildren<Polygon>(this);
-        _polygonByValue.Clear();
+        var polygons = new System.Collections.Generic.Dictionary<TouchValue, Polygon>();
         foreach (var p in buttons)
         {
             if (p.Tag is TouchValue tv)
-            {
-                _polygonByValue[tv] = p;
-            }
+                polygons[tv] = p;
         }
-        BuildPolygonData();
-        RecomputeCircleOffsets();
-        DeselectAllItems();
+
+        // Initialize the new touch engine
+        _touchEngine = new TouchSensorEngine(polygons,
+            Properties.Settings.Default.ContactRadiusPx,
+            Properties.Settings.Default.ButtonContactRadiusPx);
+
+        _touchEngine.OnPress = tv =>
+        {
+            onTouch?.Invoke(tv);
+            if (isRingButtonEmulationEnabled && RingButtonEmulator.HasRingButtonMapping(tv))
+            {
+                RingButtonEmulator.PressButton(tv);
+            }
+        };
+
+        _touchEngine.OnRelease = tv =>
+        {
+            onRelease?.Invoke(tv);
+            if (isRingButtonEmulationEnabled)
+            {
+                RingButtonEmulator.ReleaseButton(tv);
+            }
+        };
+
+        // Wire up tracing
+        _touchEngine.Trace = (category, msg) => InputTracer.Event(category, msg);
 
         try
         {
@@ -265,83 +258,21 @@ public partial class TouchPanel : Window
         }
         catch (Exception ex)
         {
-            if (isDebugEnabled) Logger.Error("Failed to create InputSurfaceHost", ex);
+            Logger.Error("Failed to create InputSurfaceHost", ex);
         }
 
         // Position the resize grip popup above the HwndHost (airspace-safe)
         PositionResizeGripPopup();
     }
 
-    private void BuildPolygonData()
+    private void UpdateEngineRadii()
     {
-        var list = new List<PolygonData>();
-        _polygonIndexByValue.Clear();
-        int index = 0;
-        foreach (var kv in _polygonByValue)
+        if (_touchEngine != null)
         {
-            var poly = kv.Value;
-            double left = Canvas.GetLeft(poly); if (double.IsNaN(left)) left = 0;
-            double top = Canvas.GetTop(poly); if (double.IsNaN(top)) top = 0;
-            var pts = poly.Points;
-            int count = pts.Count;
-            var absPts = new Point[count];
-            double minX = double.MaxValue, maxX = double.MinValue, minY = double.MaxValue, maxY = double.MinValue;
-            for (int i = 0; i < count; i++)
-            {
-                double x = left + pts[i].X;
-                double y = top + pts[i].Y;
-                absPts[i] = new Point(x, y);
-                if (x < minX) minX = x;
-                if (x > maxX) maxX = x;
-                if (y < minY) minY = y;
-                if (y > maxY) maxY = y;
-            }
-            var data = new PolygonData
-            {
-                Value = kv.Key,
-                Points = absPts,
-                MinX = minX, MaxX = maxX, MinY = minY, MaxY = maxY
-            };
-            list.Add(data);
-            _polygonIndexByValue[kv.Key] = index++;
+            _touchEngine.SetRadii(
+                Math.Max(0, Properties.Settings.Default.ContactRadiusPx),
+                Math.Max(0, Properties.Settings.Default.ButtonContactRadiusPx));
         }
-        _polygons = list.ToArray();
-    }
-
-    private void RecomputeCircleOffsets()
-    {
-        // Regular touch sensors (B, C, E groups)
-        var r = _contactRadiusPx;
-        int n = Math.Max(8, _circleSampleCount);
-        var outer = new Point[n];
-        var inner = new Point[n];
-        var ri = r * 0.5;
-        for (int i = 0; i < n; i++)
-        {
-            var ang = (i * 2.0 * Math.PI) / n;
-            var cos = Math.Cos(ang);
-            var sin = Math.Sin(ang);
-            outer[i] = new Point(cos * r, sin * r);
-            inner[i] = new Point(cos * ri, sin * ri);
-        }
-        _circleOffsets = outer;
-        _innerCircleOffsets = inner;
-
-        // Button sensors (A, D groups) - separate radius
-        var br = _buttonContactRadiusPx;
-        var boutter = new Point[n];
-        var binner = new Point[n];
-        var bri = br * 0.5;
-        for (int i = 0; i < n; i++)
-        {
-            var ang = (i * 2.0 * Math.PI) / n;
-            var cos = Math.Cos(ang);
-            var sin = Math.Sin(ang);
-            boutter[i] = new Point(cos * br, sin * br);
-            binner[i] = new Point(cos * bri, sin * bri);
-        }
-        _buttonCircleOffsets = boutter;
-        _buttonInnerCircleOffsets = binner;
     }
 
     public void PositionTouchPanel()
@@ -425,16 +356,94 @@ public partial class TouchPanel : Window
 
     // Legacy WPF Touch Frame path removed; input handled by native host
 
-    private void DeselectAllItems()
+    public void SetBorderMode(BorderSetting borderSetting, string borderColour)
     {
-        // Logic to deselect all items or the last touched item
-        foreach (var element in activeTouches.Values)
+        if (borderSetting == BorderSetting.Rainbow)
         {
-            HighlightElement(element.polygon, false);
-            onRelease?.Invoke((TouchValue)element.polygon.Tag);
+            var rotateTransform = new RotateTransform { CenterX = 0.5, CenterY = 0.5 };
+            touchPanelBorder.BorderBrush = new ImageBrush
+            {
+                ImageSource = new BitmapImage(new Uri(@"pack://application:,,,/Assets/conicalGradient.png")),
+                ViewportUnits = BrushMappingMode.RelativeToBoundingBox,
+                Viewport = new Rect(0, 0, 1, 1),
+                TileMode = TileMode.Tile,
+                RelativeTransform = rotateTransform,
+            };
+
+            var animation = new DoubleAnimation
+            {
+                From = 0,
+                To = 360,
+                Duration = new Duration(TimeSpan.FromSeconds(10)),
+                RepeatBehavior = RepeatBehavior.Forever
+            };
+
+            rotateTransform.BeginAnimation(RotateTransform.AngleProperty, animation);
+            return;
         }
-        activeTouches.Clear();
-        RingButtonEmulator.ReleaseAllButtons();
+        else if (borderSetting == BorderSetting.Solid)
+        {
+            try
+            {
+                var colour = (Color)ColorConverter.ConvertFromString(borderColour);
+                touchPanelBorder.BorderBrush = new SolidColorBrush { Color = colour };
+                return;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Failed to parse solid colour", ex);
+            }
+        }
+        touchPanelBorder.BorderBrush = null;
+    }
+
+    public void SetEmulateRingButton(bool enabled)
+    {
+        isRingButtonEmulationEnabled = enabled;
+    }
+
+    private void HighlightElement(Polygon element, bool highlight)
+    {
+        if (isDebugEnabled)
+        {
+            Application.Current.Dispatcher.Invoke(() =>
+            {
+                element.Opacity = highlight ? 0.8 : 0.3;
+            });
+        }
+    }
+
+    private void EnsureDebugEllipse(uint id)
+    {
+        if (_debugEllipses.ContainsKey(id)) return;
+        var el = new Ellipse
+        {
+            Stroke = Brushes.Lime,
+            StrokeThickness = 2,
+            Fill = Brushes.Transparent,
+            Opacity = 0.9,
+            IsHitTestVisible = false,
+        };
+        _debugEllipses[id] = el;
+        TouchCanvas.Children.Add(el);
+        Panel.SetZIndex(el, int.MaxValue);
+        UpdateDebugEllipseSize(el);
+    }
+
+    private void UpdateDebugEllipse(uint id, Point center)
+    {
+        if (!_debugEllipses.TryGetValue(id, out var el)) return;
+        UpdateDebugEllipseSize(el);
+        var r = _touchEngine?.GetTouchRadius() ?? 35;
+        Canvas.SetLeft(el, center.X - r);
+        Canvas.SetTop(el, center.Y - r);
+    }
+
+    private void UpdateDebugEllipseSize(Ellipse el)
+    {
+        var r = _touchEngine?.GetTouchRadius() ?? 35;
+        el.Width = r * 2;
+        el.Height = r * 2;
     }
 
     public void SetDebugMode(bool enabled)
@@ -844,341 +853,5 @@ public partial class TouchPanel : Window
                 new Point(324, 0),
             ];
         }
-        // Rebuild precomputed polygon data after geometry changes
-        BuildPolygonData();
-    }
-
-    public void SetBorderMode(BorderSetting borderSetting, string borderColour)
-    {
-        if (borderSetting == BorderSetting.Rainbow)
-        {
-            var rotateTransform = new RotateTransform { CenterX = 0.5, CenterY = 0.5 };
-            touchPanelBorder.BorderBrush = new ImageBrush
-            {
-                ImageSource = new BitmapImage(new Uri(@"pack://application:,,,/Assets/conicalGradient.png")),
-                ViewportUnits = BrushMappingMode.RelativeToBoundingBox,
-                Viewport = new Rect(0, 0, 1, 1),
-                TileMode = TileMode.Tile,
-                RelativeTransform = rotateTransform,
-            };
-
-            var animation = new DoubleAnimation
-            {
-                From = 0,
-                To = 360,
-                Duration = new Duration(TimeSpan.FromSeconds(10)),
-                RepeatBehavior = RepeatBehavior.Forever
-            };
-
-            rotateTransform.BeginAnimation(RotateTransform.AngleProperty, animation);
-            return;
-        }
-        else if (borderSetting == BorderSetting.Solid)
-        {
-            try
-            {
-                var colour = (Color)ColorConverter.ConvertFromString(borderColour);
-                touchPanelBorder.BorderBrush = new SolidColorBrush { Color = colour };
-                return;
-            }
-            catch (Exception ex)
-            {
-                Logger.Error("Failed to parse solid colour", ex);
-            }
-        }
-        touchPanelBorder.BorderBrush = null;
-    }
-
-    public void SetEmulateRingButton(bool enabled)
-    {
-        isRingButtonEmulationEnabled = enabled;
-    }
-
-    private void HighlightElement(Polygon element, bool highlight)
-    {
-        if (isDebugEnabled)
-        {
-            Application.Current.Dispatcher.Invoke(() =>
-            {
-                element.Opacity = highlight ? 0.8 : 0.3;
-            });
-        }
-    }
-
-    // --- Optimized low-latency pointer processing + polar mapping ---
-
-    private void HandlePointerDown(uint id, Point canvasPoint)
-    {
-        if (isDebugEnabled)
-        {
-            EnsureDebugEllipse(id);
-            UpdateDebugEllipse(id, canvasPoint);
-        }
-        ulong mask = SensorsAtPointMask(canvasPoint);
-        InputTracer.Event("MASK", $"id={id} DOWN at=({canvasPoint.X:F1},{canvasPoint.Y:F1}) mask=0x{mask:X}");
-        PressSensorMask(mask);
-        _pointerStates[id] = new PointerTrack(canvasPoint, mask);
-    }
-
-    private void HandlePointerUpdate(uint id, Point canvasPoint)
-    {
-        if (!_pointerStates.TryGetValue(id, out var track))
-        {
-            HandlePointerDown(id, canvasPoint);
-            return;
-        }
-
-        if (isDebugEnabled)
-        {
-            EnsureDebugEllipse(id);
-            UpdateDebugEllipse(id, canvasPoint);
-        }
-
-        var from = track.Last;
-        var to = canvasPoint;
-        ulong nextMask = SensorsAlongPathMask(from, to);
-
-        // Diff masks
-        ulong added = nextMask & ~track.CurrentMask;
-        ulong removed = track.CurrentMask & ~nextMask;
-        if (added != 0 || removed != 0)
-        {
-            InputTracer.Event("MASK", $"id={id} MOVE at=({canvasPoint.X:F1},{canvasPoint.Y:F1}) prevMask=0x{track.CurrentMask:X} nextMask=0x{nextMask:X} added=0x{added:X} removed=0x{removed:X}");
-        }
-        PressSensorMask(added);
-        ReleaseSensorMask(removed);
-
-        track.Last = canvasPoint;
-        track.CurrentMask = nextMask;
-    }
-
-    private void HandlePointerUp(uint id, Point canvasPoint)
-    {
-        if (_pointerStates.TryGetValue(id, out var track))
-        {
-            InputTracer.Event("MASK", $"id={id} UP at=({canvasPoint.X:F1},{canvasPoint.Y:F1}) releasingMask=0x{track.CurrentMask:X}");
-            ReleaseSensorMask(track.CurrentMask);
-            _pointerStates.Remove(id);
-        }
-        if (_debugEllipses.TryGetValue(id, out var el))
-        {
-            TouchCanvas.Children.Remove(el);
-            _debugEllipses.Remove(id);
-        }
-    }
-
-    // Returns bitmask of sensors along a line segment (stepped sampling)
-    private ulong SensorsAlongPathMask(Point from, Point to)
-    {
-        var dx = to.X - from.X;
-        var dy = to.Y - from.Y;
-        var dist = Math.Sqrt(dx * dx + dy * dy);
-        var steps = Math.Max(1, (int)(dist / 3));
-        ulong result = 0;
-        for (int i = 0; i <= steps; i++)
-        {
-            var t = steps == 0 ? 1.0 : (double)i / steps;
-            var p = new Point(from.X + dx * t, from.Y + dy * t);
-            result |= SensorsAtPointMask(p);
-        }
-        return result;
-    }
-
-    // Returns bitmask of sensors touching a circular contact area at point p.
-    // Samples the center plus the precomputed inner/outer offset rings (contact-radius
-    // tolerant) rather than one exact pixel. A single-point sample flickers between
-    // adjacent sensors as the reported touch centroid jitters a few px frame to frame,
-    // which shows up as spurious press/release/press on a finger that never moved —
-    // exactly the "double tap" / early-second-hit symptom in-game.
-    private ulong SensorsAtPointMask(Point p)
-    {
-        ulong mask = PointToMask(p);
-        
-        // Use appropriate offsets based on sensor type
-        // Button sensors (A1-A8, D1-D8) use button radius; others use touch radius
-        var buttonMask = 0UL;
-        var touchMask = 0UL;
-        
-        // First get all sensors at point with touch radius
-        var outer = _circleOffsets;
-        for (int i = 0; i < outer.Length; i++)
-        {
-            touchMask |= PointToMask(new Point(p.X + outer[i].X, p.Y + outer[i].Y));
-        }
-        var inner = _innerCircleOffsets;
-        for (int i = 0; i < inner.Length; i++)
-        {
-            touchMask |= PointToMask(new Point(p.X + inner[i].X, p.Y + inner[i].Y));
-        }
-        
-        // Get button sensors with button radius
-        var boutter = _buttonCircleOffsets;
-        for (int i = 0; i < boutter.Length; i++)
-        {
-            buttonMask |= PointToMask(new Point(p.X + boutter[i].X, p.Y + boutter[i].Y));
-        }
-        var binner = _buttonInnerCircleOffsets;
-        for (int i = 0; i < binner.Length; i++)
-        {
-            buttonMask |= PointToMask(new Point(p.X + binner[i].X, p.Y + binner[i].Y));
-        }
-        
-        // Combine: button sensors use button radius, touch sensors use touch radius
-        // Button sensors are A1-A8 (bits 0-7) and D1-D8 (bits 18-25)
-        const ulong ButtonMask = 0xFF | (0xFFUL << 18); // A1-A8 + D1-D8
-        mask |= (touchMask & ~ButtonMask) | (buttonMask & ButtonMask);
-        return mask;
-    }
-
-    // Fast point-to-mask: bounding box check + ray casting
-    private ulong PointToMask(Point p)
-    {
-        ulong mask = 0;
-        for (int i = 0; i < _polygons.Length; i++)
-        {
-            var poly = _polygons[i];
-            if (p.X < poly.MinX || p.X > poly.MaxX || p.Y < poly.MinY || p.Y > poly.MaxY)
-                continue;
-            if (PointInPolygon(p, poly.Points))
-                mask |= (1UL << i); // bit position = polygon array index
-        }
-        return mask;
-    }
-
-    private void PressSensorMask(ulong mask)
-    {
-        while (mask != 0)
-        {
-            int bit = TrailingZeroCount(mask);
-            var tv = _polygons[bit].Value;
-            if (!_sensorHoldCounts.TryGetValue(tv, out var c)) c = 0;
-            _sensorHoldCounts[tv] = c + 1;
-            if (c == 0)
-            {
-                InputTracer.Event("SENSOR", $"PRESS {tv}");
-                onTouch?.Invoke(tv);
-                if (isRingButtonEmulationEnabled && RingButtonEmulator.HasRingButtonMapping(tv))
-                {
-                    RingButtonEmulator.PressButton(tv);
-                }
-                if (_polygonByValue.TryGetValue(tv, out var poly)) HighlightElement(poly, true);
-            }
-            else
-            {
-                InputTracer.Event("SENSOR", $"press {tv} (already held, count={c + 1})");
-            }
-            mask &= mask - 1; // clear lowest set bit
-        }
-    }
-
-    private void ReleaseSensorMask(ulong mask)
-    {
-        while (mask != 0)
-        {
-            int bit = TrailingZeroCount(mask);
-            var tv = _polygons[bit].Value;
-            if (!_sensorHoldCounts.TryGetValue(tv, out var c))
-            {
-                InputTracer.Event("SENSOR", $"release {tv} ignored (not held)");
-                mask &= mask - 1;
-                continue;
-            }
-            c--;
-            if (c <= 0)
-            {
-                _sensorHoldCounts.Remove(tv);
-                InputTracer.Event("SENSOR", $"RELEASE {tv}");
-                onRelease?.Invoke(tv);
-                if (isRingButtonEmulationEnabled)
-                {
-                    RingButtonEmulator.ReleaseButton(tv);
-                }
-                if (_polygonByValue.TryGetValue(tv, out var poly)) HighlightElement(poly, false);
-            }
-            else
-            {
-                _sensorHoldCounts[tv] = c;
-            }
-            mask &= mask - 1;
-        }
-    }
-
-    private static bool PointInPolygon(Point p, Point[] pts)
-    {
-        // Ray-casting algorithm with pre-offset points
-        int count = pts.Length;
-        if (count < 3) return false;
-        bool inside = false;
-        double x = p.X, y = p.Y;
-        double x0 = pts[count - 1].X;
-        double y0 = pts[count - 1].Y;
-        for (int i = 0; i < count; i++)
-        {
-            double x1 = pts[i].X;
-            double y1 = pts[i].Y;
-            // Check if edge (x0,y0)-(x1,y1) straddles the scanline at y
-            bool cond = ((y1 > y) != (y0 > y));
-            if (cond)
-            {
-                double xInt = x1 + (y - y1) * (x0 - x1) / (y0 - y1);
-                if (xInt > x) inside = !inside;
-            }
-            x0 = x1; y0 = y1;
-        }
-        return inside;
-    }
-
-    // BitOperations.TrailingZeroCount polyfill for older .NET versions
-    private static int TrailingZeroCount(ulong value)
-    {
-        if (value == 0) return 0;
-        int count = 0;
-        while ((value & 1UL) == 0)
-        {
-            value >>= 1;
-            count++;
-        }
-        return count;
-    }
-
-    private void EnsureDebugEllipse(uint id)
-    {
-        if (_debugEllipses.ContainsKey(id)) return;
-        var el = new Ellipse
-        {
-            Stroke = Brushes.Lime,
-            StrokeThickness = 2,
-            Fill = Brushes.Transparent,
-            Opacity = 0.9,
-            IsHitTestVisible = false,
-        };
-        _debugEllipses[id] = el;
-        TouchCanvas.Children.Add(el);
-        Panel.SetZIndex(el, int.MaxValue);
-        UpdateDebugEllipseSize(el);
-    }
-
-    private void UpdateDebugEllipse(uint id, Point center)
-    {
-        if (!_debugEllipses.TryGetValue(id, out var el)) return;
-        UpdateDebugEllipseSize(el);
-        var r = _contactRadiusPx;
-        Canvas.SetLeft(el, center.X - r);
-        Canvas.SetTop(el, center.Y - r);
-    }
-
-    private void UpdateAllDebugEllipseSizes()
-    {
-        foreach (var el in _debugEllipses.Values)
-        {
-            UpdateDebugEllipseSize(el);
-        }
-    }
-
-    private void UpdateDebugEllipseSize(Ellipse el)
-    {
-        var r = _contactRadiusPx;
-        el.Width = r * 2;
-        el.Height = r * 2;
     }
 }
