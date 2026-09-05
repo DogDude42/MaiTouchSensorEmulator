@@ -185,7 +185,9 @@ public sealed class TouchSensorEngine
         for (int i = 0; i < _sensors.Length; i++)
         {
             var s = _sensors[i];
-            if (p.X < s.MinX || p.X > s.MaxX || p.Y < s.MinY || p.Y > s.MaxY)
+            // Use slightly expanded bounds to fill gaps between adjacent sensors
+            const double expansion = 2.0; // pixels
+            if (p.X < s.MinX - expansion || p.X > s.MaxX + expansion || p.Y < s.MinY - expansion || p.Y > s.MaxY + expansion)
                 continue;
             if (PointInPolygon(p, s.Points))
                 mask |= (1UL << i);
